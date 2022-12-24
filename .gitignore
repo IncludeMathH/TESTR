@@ -38,6 +38,7 @@ dist/
 .python-version
 
 # project dirs
+/datasets
 /datasets/coco
 /datasets/lvis
 /datasets/pic
