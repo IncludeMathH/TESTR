@@ -8,6 +8,7 @@ from adet.layers.deformable_transformer import DeformableTransformer
 from adet.layers.pos_encoding import PositionalEncoding1D
 from adet.utils.misc import NestedTensor, inverse_sigmoid_offset, nested_tensor_from_tensor_list, sigmoid_offset
 
+
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
@@ -23,45 +24,47 @@ class MLP(nn.Module):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
+
 class TESTR(nn.Module):
     """
     Same as :class:`detectron2.modeling.ProposalNetwork`.
     Use one stage detector and a second stage for instance-wise prediction.
     """
+
     def __init__(self, cfg, backbone):
         super().__init__()
         self.device = torch.device(cfg.MODEL.DEVICE)
 
         self.backbone = backbone
-        
-        # fmt: off
-        self.d_model                 = cfg.MODEL.TRANSFORMER.HIDDEN_DIM
-        self.nhead                   = cfg.MODEL.TRANSFORMER.NHEADS
-        self.num_encoder_layers      = cfg.MODEL.TRANSFORMER.ENC_LAYERS
-        self.num_decoder_layers      = cfg.MODEL.TRANSFORMER.DEC_LAYERS
-        self.dim_feedforward         = cfg.MODEL.TRANSFORMER.DIM_FEEDFORWARD
-        self.dropout                 = cfg.MODEL.TRANSFORMER.DROPOUT
-        self.activation              = "relu"
-        self.return_intermediate_dec = True
-        self.num_feature_levels      = cfg.MODEL.TRANSFORMER.NUM_FEATURE_LEVELS
-        self.dec_n_points            = cfg.MODEL.TRANSFORMER.ENC_N_POINTS
-        self.enc_n_points            = cfg.MODEL.TRANSFORMER.DEC_N_POINTS
-        self.num_proposals           = cfg.MODEL.TRANSFORMER.NUM_QUERIES
-        self.pos_embed_scale         = cfg.MODEL.TRANSFORMER.POSITION_EMBEDDING_SCALE
-        self.num_ctrl_points         = cfg.MODEL.TRANSFORMER.NUM_CTRL_POINTS
-        self.num_classes             = 1
-        self.max_text_len            = cfg.MODEL.TRANSFORMER.NUM_CHARS
-        self.voc_size                = cfg.MODEL.TRANSFORMER.VOC_SIZE
-        self.sigmoid_offset          = not cfg.MODEL.TRANSFORMER.USE_POLYGON
 
-        self.text_pos_embed   = PositionalEncoding1D(self.d_model, normalize=True, scale=self.pos_embed_scale)
+        # fmt: off
+        self.d_model = cfg.MODEL.TRANSFORMER.HIDDEN_DIM
+        self.nhead = cfg.MODEL.TRANSFORMER.NHEADS
+        self.num_encoder_layers = cfg.MODEL.TRANSFORMER.ENC_LAYERS
+        self.num_decoder_layers = cfg.MODEL.TRANSFORMER.DEC_LAYERS
+        self.dim_feedforward = cfg.MODEL.TRANSFORMER.DIM_FEEDFORWARD
+        self.dropout = cfg.MODEL.TRANSFORMER.DROPOUT
+        self.activation = "relu"
+        self.return_intermediate_dec = True
+        self.num_feature_levels = cfg.MODEL.TRANSFORMER.NUM_FEATURE_LEVELS
+        self.dec_n_points = cfg.MODEL.TRANSFORMER.ENC_N_POINTS
+        self.enc_n_points = cfg.MODEL.TRANSFORMER.DEC_N_POINTS
+        self.num_proposals = cfg.MODEL.TRANSFORMER.NUM_QUERIES
+        self.pos_embed_scale = cfg.MODEL.TRANSFORMER.POSITION_EMBEDDING_SCALE
+        self.num_ctrl_points = cfg.MODEL.TRANSFORMER.NUM_CTRL_POINTS
+        self.num_classes = 1
+        self.max_text_len = cfg.MODEL.TRANSFORMER.NUM_CHARS
+        self.voc_size = cfg.MODEL.TRANSFORMER.VOC_SIZE
+        self.sigmoid_offset = not cfg.MODEL.TRANSFORMER.USE_POLYGON
+
+        self.text_pos_embed = PositionalEncoding1D(self.d_model, normalize=True, scale=self.pos_embed_scale)
         # fmt: on
-        
+
         self.transformer = DeformableTransformer(
             d_model=self.d_model, nhead=self.nhead, num_encoder_layers=self.num_encoder_layers,
             num_decoder_layers=self.num_decoder_layers, dim_feedforward=self.dim_feedforward,
             dropout=self.dropout, activation=self.activation, return_intermediate_dec=self.return_intermediate_dec,
-            num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points, 
+            num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points,
             enc_n_points=self.enc_n_points, num_proposals=self.num_proposals,
         )
         self.ctrl_point_class = nn.Linear(self.d_model, self.num_classes)
@@ -74,7 +77,6 @@ class TESTR(nn.Module):
         self.ctrl_point_embed = nn.Embedding(self.num_ctrl_points, self.d_model)
         self.text_embed = nn.Embedding(self.max_text_len, self.d_model)
 
-                
         if self.num_feature_levels > 1:
             strides = [8, 16, 32]
             num_channels = [512, 1024, 2048]
@@ -127,7 +129,6 @@ class TESTR(nn.Module):
         self.transformer.bbox_embed = self.bbox_coord
 
         self.to(self.device)
-
 
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
