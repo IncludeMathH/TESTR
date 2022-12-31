@@ -238,6 +238,10 @@ class Trainer(DefaultTrainer):
             optimizer = maybe_add_gradient_clipping(cfg, optimizer)
         return optimizer
 
+    def run_step(self):
+        self._trainer.iter = self.iter
+        self._trainer.run_step(K=2)     # K: 每K个batch进行一次梯度计算
+
 
 def setup(args):
     """
