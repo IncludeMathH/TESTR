@@ -81,8 +81,10 @@ class DatasetMapperWithBasis(DatasetMapper):
         self.boxinst_enabled = cfg.MODEL.BOXINST.ENABLED
 
         if self.boxinst_enabled:
-            self.use_instance_mask = False
+            # self.use_instance_mask = False
             self.recompute_boxes = False
+        self.use_instance_mask = True
+        self.instance_mask_format = 'bitmask'
 
     def __call__(self, dataset_dict):
         """
@@ -129,6 +131,7 @@ class DatasetMapperWithBasis(DatasetMapper):
                 for instance in dataset_dict["annotations"]
             ]
         )
+        print(f'sem_seg_gt={sem_seg_gt}')
         aug_input = T.StandardAugInput(image, boxes=boxes, sem_seg=sem_seg_gt)
         transforms = aug_input.apply_augmentations(self.augmentation)
         image, sem_seg_gt = aug_input.image, aug_input.sem_seg
@@ -211,4 +214,6 @@ class DatasetMapperWithBasis(DatasetMapper):
             basis_sem_gt = transforms.apply_segmentation(basis_sem_gt)
             basis_sem_gt = torch.as_tensor(basis_sem_gt.astype("long"))
             dataset_dict["basis_sem"] = basis_sem_gt
+
+        # print(f'in mapper, dataset_dict={dataset_dict}')
         return dataset_dict

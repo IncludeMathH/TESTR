@@ -239,8 +239,12 @@ class Trainer(DefaultTrainer):
         return optimizer
 
     def run_step(self):
+        """
+        若要使用梯度累积，还应该在detectron2/engine/data/default里面更改默认的Trainer为GradAccSimpleTrainer
+        :return:
+        """
         self._trainer.iter = self.iter
-        self._trainer.run_step(K=2)     # K: 每K个batch进行一次梯度计算
+        self._trainer.run_step()  # self._trainer.run_step(K=2)     # K: 每K个batch进行一次梯度计算
 
 
 def setup(args):

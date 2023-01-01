@@ -24,4 +24,4 @@ SOLVER:
   CHECKPOINT_PERIOD: 1000
 TEST:
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_R_50_Polygon_SameBS-2"
+OUTPUT_DIR: "output/TESTR/totaltext/test"
