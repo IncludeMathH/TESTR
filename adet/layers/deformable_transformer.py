@@ -127,21 +127,21 @@ class DeformableTransformer(nn.Module):
         lvl_pos_embed_flatten = []
         spatial_shapes = []
         for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):
-            bs, c, h, w = src.shape
-            spatial_shape = (h, w)
+            bs, c, h, w = src.shape  # src 是特征图
+            spatial_shape = (h, w)   # 记录特征图的
             spatial_shapes.append(spatial_shape)
-            src = src.flatten(2).transpose(1, 2)
-            mask = mask.flatten(1)
-            pos_embed = pos_embed.flatten(2).transpose(1, 2)
+            src = src.flatten(2).transpose(1, 2)  # h, w -> B, h*w,  c
+            mask = mask.flatten(1)                # 还不知道为何有mask
+            pos_embed = pos_embed.flatten(2).transpose(1, 2)     # bs, c, h, w-> bs, hw, c
             lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
             lvl_pos_embed_flatten.append(lvl_pos_embed)
             src_flatten.append(src)
             mask_flatten.append(mask)
-        src_flatten = torch.cat(src_flatten, 1)
+        src_flatten = torch.cat(src_flatten, 1)    # bs, h1w1+h2w2+h3w3, c
         mask_flatten = torch.cat(mask_flatten, 1)
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
-        level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
+        level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))   # 从哪里开始是哪个level，可以用于复原
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
         # encoder
