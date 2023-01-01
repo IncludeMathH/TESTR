@@ -145,7 +145,7 @@ class DatasetMapperWithBasis(DatasetMapper):
 
         # USER: Remove if you don't use pre-computed proposals.
         # Most users would not need this feature.
-        if self.proposal_topk:
+        if self.proposal_topk:  # 实际为None，不执行
             utils.transform_proposals(
                 dataset_dict,
                 image_shape,
@@ -164,7 +164,7 @@ class DatasetMapperWithBasis(DatasetMapper):
             # USER: Modify this if you want to keep them for some reason.
             for anno in dataset_dict["annotations"]:
                 if not self.use_instance_mask:
-                    anno.pop("segmentation", None)
+                    anno.pop("segmentation", None)   # 默认是false
                 if not self.use_keypoint:
                     anno.pop("keypoints", None)
 
