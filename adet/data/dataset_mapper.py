@@ -131,7 +131,6 @@ class DatasetMapperWithBasis(DatasetMapper):
                 for instance in dataset_dict["annotations"]
             ]
         )
-        print(f'sem_seg_gt={sem_seg_gt}')
         aug_input = T.StandardAugInput(image, boxes=boxes, sem_seg=sem_seg_gt)
         transforms = aug_input.apply_augmentations(self.augmentation)
         image, sem_seg_gt = aug_input.image, aug_input.sem_seg

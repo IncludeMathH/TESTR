@@ -125,8 +125,8 @@ class MSDeformAttn(nn.Module):
 
         :return output                     (N, Length_{query}, C)
         """
-        N, Len_q, _ = query.shape
-        N, Len_in, _ = input_flatten.shape
+        N, Len_q, _ = query.shape                         # 有位置编码信息 -> query -> attention
+        N, Len_in, _ = input_flatten.shape                # 无位置编码信息 -> value
         assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
 
         value = self.value_proj(input_flatten)

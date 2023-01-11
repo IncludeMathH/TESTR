@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from detectron2.modeling.meta_arch.build import META_ARCH_REGISTRY
 from detectron2.modeling import build_backbone
 from detectron2.modeling.postprocessing import detector_postprocess as d2_postprocesss
-from detectron2.structures import ImageList, Instances
+from detectron2.structures import ImageList, Instances, ROIMasks
 
 from adet.layers.pos_encoding import PositionalEncoding2D
 from adet.modeling.testr.losses import SetCriterion
@@ -72,6 +72,7 @@ def detector_postprocess(results, output_height, output_width, mask_threshold=0.
     """
     In addition to the post processing of detectron2, we add scalign for 
     bezier control points.
+    output_height: the original height of the image.
     """
     scale_x, scale_y = (output_width / results.image_size[1], output_height / results.image_size[0])
     # results = d2_postprocesss(results, output_height, output_width, mask_threshold)
@@ -97,6 +98,16 @@ def detector_postprocess(results, output_height, output_width, mask_threshold=0.
         polygons[:, 0::2] *= scale_x
         polygons[:, 1::2] *= scale_y
 
+    # =====添加退特征图的处理结果
+    if results.has('attention'):
+        # attention is a tensor of shape (N, 1, M, M)
+        attentions = results.attention
+        for attention in attentions:
+            roi_masks = ROIMasks(attention[:, 0, :, :])
+            results.pred_masks = roi_masks.to_bitmasks(
+                results.pred_boxes, output_height, output_width, mask_threshold
+            ).tensor  # TODO return ROIMasks/BitMask object in the future
+
     return results
 
 
@@ -108,6 +119,7 @@ class TransformerDetector(nn.Module):
     """
     def __init__(self, cfg):
         super().__init__()
+        self.use_attention = cfg.MODEL.ATTENTION.ENABLED
         self.device = torch.device(cfg.MODEL.DEVICE)
         
         d2_backbone = MaskedBackbone(cfg)
@@ -122,6 +134,8 @@ class TransformerDetector(nn.Module):
         
         loss_cfg = cfg.MODEL.TRANSFORMER.LOSS
         weight_dict = {'loss_ce': loss_cfg.POINT_CLASS_WEIGHT, 'loss_ctrl_points': loss_cfg.POINT_COORD_WEIGHT, 'loss_texts': loss_cfg.POINT_TEXT_WEIGHT}
+        if self.use_attention:
+            weight_dict['attentions'] = 1.0  # 可以更改，是一个超参数
         enc_weight_dict = {'loss_bbox': loss_cfg.BOX_COORD_WEIGHT, 'loss_giou': loss_cfg.BOX_GIOU_WEIGHT, 'loss_ce': loss_cfg.BOX_CLASS_WEIGHT}
         if loss_cfg.AUX_LOSS:
             aux_weight_dict = {}
@@ -136,6 +150,8 @@ class TransformerDetector(nn.Module):
 
         enc_losses = ['labels', 'boxes']
         dec_losses = ['labels', 'ctrl_points', 'texts']
+        if self.use_attention:
+            dec_losses.append('attentions')
 
         self.criterion = SetCriterion(self.testr.num_classes, box_matcher, point_matcher,
                                       weight_dict, enc_losses, dec_losses, self.testr.num_ctrl_points, 
@@ -182,7 +198,7 @@ class TransformerDetector(nn.Module):
 
         if self.training:
             gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
-            targets = self.prepare_targets(gt_instances)
+            targets = self.prepare_targets(gt_instances)    # 字典
             loss_dict = self.criterion(output, targets)
             weight_dict = self.criterion.weight_dict
             for k in loss_dict.keys():
@@ -193,10 +209,10 @@ class TransformerDetector(nn.Module):
             ctrl_point_cls = output["pred_logits"]
             ctrl_point_coord = output["pred_ctrl_points"]
             text_pred = output["pred_texts"]
-            results = self.inference(ctrl_point_cls, ctrl_point_coord, text_pred, images.image_sizes)
-            processed_results = []
+            results = self.inference(ctrl_point_cls, ctrl_point_coord, text_pred, images.image_sizes) # image.image_sizes: 处理后的image尺寸
+            processed_results = []   # results: [Instance(), ..., Instance()]
             for results_per_image, input_per_image, image_size in zip(results, batched_inputs, images.image_sizes):
-                height = input_per_image.get("height", image_size[0])
+                height = input_per_image.get("height", image_size[0])   # height, width应该是原始的长和宽
                 width = input_per_image.get("width", image_size[1])
                 r = detector_postprocess(results_per_image, height, width)
                 processed_results.append({"instances": r})
@@ -213,7 +229,12 @@ class TransformerDetector(nn.Module):
             raw_ctrl_points = targets_per_image.polygons if self.use_polygon else targets_per_image.beziers
             gt_ctrl_points = raw_ctrl_points.reshape(-1, self.testr.num_ctrl_points, 2) / torch.as_tensor([w, h], dtype=torch.float, device=self.device)[None, None, :]
             gt_text = targets_per_image.text
-            new_targets.append({"labels": gt_classes, "boxes": gt_boxes, "ctrl_points": gt_ctrl_points, "texts": gt_text})
+            if self.use_attention:
+                gt_attention = targets_per_image.gt_attentions
+                new_targets.append({"labels": gt_classes, "boxes": gt_boxes, "ctrl_points": gt_ctrl_points, "texts": gt_text, 'attentions': gt_attention})
+            else:
+                new_targets.append(
+                    {"labels": gt_classes, "boxes": gt_boxes, "ctrl_points": gt_ctrl_points, "texts": gt_text})
         return new_targets
 
     def inference(self, ctrl_point_cls, ctrl_point_coord, text_pred, image_sizes):
@@ -246,3 +267,32 @@ class TransformerDetector(nn.Module):
             result.recs = topi.squeeze(-1)
             results.append(result)
         return results
+
+    def visual_mask(self, batched_inputs):
+        """
+        Args:
+            batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
+                Each item in the list contains the inputs for one image.
+                For now, each item in the list is a dict that contains:
+
+                * image: Tensor, image in (C, H, W) format.
+                * instances (optional): groundtruth :class:`Instances`
+                * proposals (optional): :class:`Instances`, precomputed proposals.
+
+                Other information that's included in the original dicts, such as:
+
+                * "height", "width" (int): the output resolution of the model, used in inference.
+                  See :meth:`postprocess` for details.
+
+        Returns:
+            list[dict]:
+                Each dict is the output for one input image.
+                The dict contains one key "instances" whose value is a :class:`Instances`.
+                The :class:`Instances` object has the following keys:
+                "pred_boxes", "pred_classes", "scores", "pred_masks", "pred_keypoints"
+        """
+        images = [x["image"].to(self.device) for x in batched_inputs]
+        images = ImageList.from_tensors(images)
+        images_norm = self.preprocess_image(batched_inputs)
+        output = self.testr(images_norm)
+        return images, output['pred_attentions']

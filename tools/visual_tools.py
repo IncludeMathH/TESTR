@@ -9,11 +9,12 @@ import torch
 import matplotlib.pyplot as plt
 
 from detectron2.data import MetadataCatalog
-from detectron2.engine.defaults import DefaultPredictor
+from detectron2.engine.defaults import AttentionPredictor
 from detectron2.utils.video_visualizer import VideoVisualizer
-from detectron2.utils.visualizer import ColorMode, Visualizer
+from detectron2.utils.visualizer import ColorMode, Visualizer, VisImage
 
 from adet.utils.visualizer import TextVisualizer
+from torchvision.transforms import Resize
 
 
 class VisualizationDemo(object):
@@ -36,12 +37,7 @@ class VisualizationDemo(object):
         self.instance_mode = instance_mode
         self.vis_text = cfg.MODEL.ROI_HEADS.NAME == "TextHead" or cfg.MODEL.TRANSFORMER.ENABLED
 
-        self.parallel = parallel
-        if parallel:
-            num_gpu = torch.cuda.device_count()
-            self.predictor = AsyncPredictor(cfg, num_gpus=num_gpu)
-        else:
-            self.predictor = DefaultPredictor(cfg)
+        self.predictor = AttentionPredictor(cfg)
 
     def run_on_image(self, image):
         """
@@ -53,31 +49,26 @@ class VisualizationDemo(object):
             predictions (dict): the output of the model.
             vis_output (VisImage): the visualized image output.
         """
-        vis_output = None
-        predictions = self.predictor(image)      # Instance()
-        # Convert image from OpenCV BGR format to Matplotlib RGB format.
-        image = image[:, :, ::-1]
-        if self.vis_text:
-            visualizer = TextVisualizer(image, self.metadata, instance_mode=self.instance_mode, cfg=self.cfg)
-        else:
-            visualizer = Visualizer(image, self.metadata, instance_mode=self.instance_mode)
+        img_ori, pred_attentions = self.predictor(image)
+        img = img_ori[0]      # 3, H, W
+        print(f'in visual_tools, img.shape = {img.shape}')
+        print(f'type of image:{type(image)}, type of img:{type(img)}')
+        img = np.array(img.cpu()).transpose(1, 2, 0)   # 3, H, W -> H, W, 3   3: R, G, B
 
-        if "bases" in predictions:
-            self.vis_bases(predictions["bases"])
-        if "panoptic_seg" in predictions:
-            panoptic_seg, segments_info = predictions["panoptic_seg"]
-            vis_output = visualizer.draw_panoptic_seg_predictions(
-                panoptic_seg.to(self.cpu_device), segments_info
-            )
-        else:
-            if "sem_seg" in predictions:
-                vis_output = visualizer.draw_sem_seg(
-                    predictions["sem_seg"].argmax(dim=0).to(self.cpu_device))
-            if "instances" in predictions:
-                    instances = predictions["instances"].to(self.cpu_device)
-                    vis_output = visualizer.draw_instance_predictions(predictions=instances)
-
-        return predictions, vis_output
+        atten_images = []
+        for i, item in enumerate(pred_attentions):
+            print(f'pred_attention.shape = {item.shape}')
+            pred_shape = item.size()[-2:]
+            img_tmp = np.array(Resize(pred_shape)(img_ori[0]).cpu())
+            item = item.sigmoid()
+            # if i == 3:
+            #     print(item[0][0])
+            thr = 0.5
+            img_tmp[2, :, :] = np.where(np.array(item.cpu())[0][0] > thr, 0, img_tmp[2, :, :])
+            img_tmp[1, :, :] = np.where(np.array(item.cpu())[0][0] > thr, 0, img_tmp[2, :, :])
+            img_tmp[0, :, :] = np.where(np.array(item.cpu())[0][0] > thr, 255, img_tmp[2, :, :])   # R
+            atten_images.append(VisImage(img_tmp.transpose(1, 2, 0)))
+        return atten_images, VisImage(img)
 
     def _frame_from_video(self, video):
         while video.isOpened():

@@ -34,6 +34,7 @@ class TESTR(nn.Module):
     def __init__(self, cfg, backbone):
         super().__init__()
         self.device = torch.device(cfg.MODEL.DEVICE)
+        self.use_attention = cfg.MODEL.ATTENTION.ENABLED
 
         self.backbone = backbone
 
@@ -60,12 +61,16 @@ class TESTR(nn.Module):
         self.text_pos_embed = PositionalEncoding1D(self.d_model, normalize=True, scale=self.pos_embed_scale)
         # fmt: on
 
+        use_attention_in_transformer = False
+        if self.use_attention:
+            self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+            use_attention_in_transformer = cfg.MODEL.ATTENTION.IN_TRANSFORMER
         self.transformer = DeformableTransformer(
             d_model=self.d_model, nhead=self.nhead, num_encoder_layers=self.num_encoder_layers,
             num_decoder_layers=self.num_decoder_layers, dim_feedforward=self.dim_feedforward,
             dropout=self.dropout, activation=self.activation, return_intermediate_dec=self.return_intermediate_dec,
             num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points,
-            enc_n_points=self.enc_n_points, num_proposals=self.num_proposals,
+            enc_n_points=self.enc_n_points, num_proposals=self.num_proposals, use_attention=use_attention_in_transformer,
         )
         self.ctrl_point_class = nn.Linear(self.d_model, self.num_classes)
         self.ctrl_point_coord = MLP(self.d_model, self.d_model, 2, 3)
@@ -179,8 +184,16 @@ class TESTR(nn.Module):
         text_pos_embed = self.text_pos_embed(self.text_embed.weight)[None, ...].repeat(self.num_proposals, 1, 1)
         text_embed = self.text_embed.weight[None, ...].repeat(self.num_proposals, 1, 1)
 
+        # if use global attention, then do:
+        if self.use_attention:
+            pred_attentions = []
+            for src in srcs:            # src is supposed to be (bs, c_l, H_l, W_l)
+                pred_attention = self.pred_attention(src)
+                pred_attentions.append(pred_attention)
+        else:
+            pred_attentions = None
         hs, hs_text, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
-            srcs, masks, pos, ctrl_point_embed, text_embed, text_pos_embed, text_mask=None)
+            srcs, masks, pos, ctrl_point_embed, text_embed, text_pos_embed, text_mask=None, pred_attentions=pred_attentions)
 
         outputs_classes = []
         outputs_coords = []
@@ -208,7 +221,10 @@ class TESTR(nn.Module):
 
         out = {'pred_logits': outputs_class[-1],
                'pred_ctrl_points': outputs_coord[-1],
-               'pred_texts': outputs_text[-1]}
+               'pred_texts': outputs_text[-1],
+               }
+        if self.use_attention:
+            out['pred_attentions'] = pred_attentions
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(
                 outputs_class, outputs_coord, outputs_text)

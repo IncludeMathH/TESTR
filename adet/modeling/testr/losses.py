@@ -2,8 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import copy
-from adet.utils.misc import accuracy, generalized_box_iou, box_cxcywh_to_xyxy, box_xyxy_to_cxcywh, is_dist_avail_and_initialized
+from adet.utils.misc import accuracy, generalized_box_iou, box_cxcywh_to_xyxy, box_xyxy_to_cxcywh, \
+    is_dist_avail_and_initialized
 from detectron2.utils.comm import get_world_size
+from typing import List
+from detectron2.structures import Instances
+from torchvision.transforms import Resize
 
 
 def sigmoid_focal_loss(inputs, targets, num_inst, alpha: float = 0.25, gamma: float = 2):
@@ -40,6 +44,47 @@ def sigmoid_focal_loss(inputs, targets, num_inst, alpha: float = 0.25, gamma: fl
         raise NotImplementedError(f"Unsupported dim {loss.ndim}")
 
 
+def loss_attentions(outputs, targets, indices, num_inst):
+    """
+    Compute the mask prediction loss defined in the Mask R-CNN paper.
+
+    Args:
+        pred_mask_logits (Tensor): A tensor of shape (B*num_stage, C, Hmask, Wmask) or (B*num_stage, 1, Hmask, Wmask)
+            for class-specific or class-agnostic, where B is the total number of predicted masks
+            in all images, C is the number of foreground classes, and Hmask, Wmask are the height
+            and width of the mask predictions. The values are logits.
+        instances (list[Instances]): A list of N Instances, where N is the number of images
+            in the batch. These instances are in 1:1
+            correspondence with the pred_mask_logits. The ground-truth labels (class, box, mask,
+            ...) associated with each instance are stored in fields.
+        vis_period (int): the period (in steps) to dump visualization.
+
+    Returns:
+        mask_loss (Tensor): A scalar tensor containing the loss.
+    """
+    if len(targets[0]['attentions']) == 0:
+        return outputs['pred_attentions'][0].sum() * 0
+    if 'pred_attentions' not in outputs:
+        for key in outputs.keys():
+            print(f'key = {key}')
+        print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+    else:
+        # print('bingo~~~~~~~~~~~~~~~~~~~~~~')
+        pass
+    device = outputs['pred_attentions'][0].device
+    gt_attention = targets[0]['attentions'][0].tensor.to(device=device)
+    gt_attention = gt_attention.to(dtype=torch.float32)
+
+    attention_loss = []
+    for item in outputs['pred_attentions']:
+        pred_attention = item[0, 0]          # item: (B, 1, H, W)
+        feat_shape = pred_attention.size()
+        gt = Resize(feat_shape)(gt_attention).squeeze(0)
+        loss_tmp = F.binary_cross_entropy_with_logits(pred_attention, gt, reduction="mean")
+        attention_loss.append(loss_tmp)
+    return {'loss_attention': sum(attention_loss)/len(attention_loss)}
+
+
 class SetCriterion(nn.Module):
     """ This class computes the loss for TESTR.
     The process happens in two steps:
@@ -47,7 +92,8 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
 
-    def __init__(self, num_classes, enc_matcher, dec_matcher, weight_dict, enc_losses, dec_losses, num_ctrl_points, focal_alpha=0.25, focal_gamma=2.0):
+    def __init__(self, num_classes, enc_matcher, dec_matcher, weight_dict, enc_losses, dec_losses, num_ctrl_points,
+                 focal_alpha=0.25, focal_gamma=2.0):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -97,7 +143,7 @@ class SetCriterion(nn.Module):
         if log:
             # TODO this should probably be a separate loss, not hacked in this one here
             losses['class_error'] = 100 - \
-                accuracy(src_logits[idx], target_classes_o)[0]
+                                    accuracy(src_logits[idx], target_classes_o)[0]
         return losses
 
     @torch.no_grad()
@@ -143,7 +189,6 @@ class SetCriterion(nn.Module):
         target_ctrl_points = torch.cat([t['texts'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         return {'loss_texts': F.cross_entropy(src_texts.transpose(1, 2), target_ctrl_points.long())}
 
-
     def loss_ctrl_points(self, outputs, targets, indices, num_inst):
         """Compute the losses related to the keypoint coordinates, the L1 regression loss
         """
@@ -180,11 +225,14 @@ class SetCriterion(nn.Module):
             'ctrl_points': self.loss_ctrl_points,
             'boxes': self.loss_boxes,
             'texts': self.loss_texts,
+            'attentions': loss_attentions,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_inst, **kwargs)
 
     def forward(self, outputs, targets):
+        # print(f'outputs = {outputs} \n=====================')
+        # print(f'targets = {targets} \n=====================')
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -192,7 +240,7 @@ class SetCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
-        
+
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.dec_matcher(outputs_without_aux, targets)
 
@@ -216,6 +264,8 @@ class SetCriterion(nn.Module):
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
                 indices = self.dec_matcher(aux_outputs, targets)
                 for loss in self.dec_losses:
+                    if loss == 'attentions':
+                        continue
                     kwargs = {}
                     if loss == 'labels':
                         # Logging is enabled only for the last layer

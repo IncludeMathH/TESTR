@@ -44,6 +44,7 @@ from adet.data.dataset_mapper import DatasetMapperWithBasis
 from adet.config import get_cfg
 from adet.checkpoint import AdetCheckpointer
 from adet.evaluation import TextEvaluator
+from detectron2.engine.train_loop import VisualTrainer
 
 
 class Trainer(DefaultTrainer):
@@ -267,29 +268,15 @@ def setup(args):
 def main(args):
     cfg = setup(args)
 
-    if args.eval_only:
-        model = Trainer.build_model(cfg)
-        AdetCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
-            cfg.MODEL.WEIGHTS, resume=args.resume
-        )
-        res = Trainer.test(cfg, model) # d2 defaults.py
-        if comm.is_main_process():
-            verify_results(cfg, res)
-        if cfg.TEST.AUG.ENABLED:
-            res.update(Trainer.test_with_TTA(cfg, model))
-        return res
+    model = Trainer.build_model(cfg)
+    AdetCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
+        cfg.MODEL.WEIGHTS, resume=args.resume
+    )
+    data_loader = Trainer.build_train_loader(cfg)
+    optimizer = Trainer.build_optimizer(cfg, model)
+    _trainer = VisualTrainer(model, data_loader, optimizer)
+    _trainer.run_step()
 
-    """
-    If you'd like to do anything fancier than the standard training logic,
-    consider writing your own training loop or subclassing the trainer.
-    """
-    trainer = Trainer(cfg)
-    trainer.resume_or_load(resume=args.resume)
-    if cfg.TEST.AUG.ENABLED:
-        trainer.register_hooks(
-            [hooks.EvalHook(0, lambda: trainer.test_with_TTA(cfg, trainer.model))]
-        )
-    return trainer.train()
 
 
 if __name__ == "__main__":
