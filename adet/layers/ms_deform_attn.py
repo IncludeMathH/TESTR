@@ -36,26 +36,32 @@ class _MSDeformAttnFunction(torch.autograd.Function):
         return grad_value, None, None, grad_sampling_loc, grad_attn_weight, None
 
 
-def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations, attention_weights):
+def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations, attention_weights, pred_attentions=None):
     # for debug and test only,
     # need to use cuda version instead
-    N_, S_, M_, D_ = value.shape
-    _, Lq_, M_, L_, P_, _ = sampling_locations.shape
+    N_, S_, M_, D_ = value.shape                                 # bs, Nb, n_heads, 256//n_heads
+    _, Lq_, M_, L_, P_, _ = sampling_locations.shape             # (N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
     value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
+    if pred_attentions is not None:
+        pred_attentions = pred_attentions.sigmoid()
+        pred_list = pred_attentions.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
     sampling_grids = 2 * sampling_locations - 1
     sampling_value_list = []
     for lid_, (H_, W_) in enumerate(value_spatial_shapes):
-        # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
-        value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_*M_, D_, H_, W_)
+        # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_      
+        value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_*M_, D_, H_, W_)            # bs*n_heads, 256//n_heads, Hl, Wl
+        if pred_attentions is not None:
+            pred_l = pred_list[lid_].transpose(1, 2).reshape(N_, 1, H_, W_)            # bs*n_heads, 1, Hl, Wl
+            value_l_ = value_l_*pred_l
         # N_, Lq_, M_, P_, 2 -> N_, M_, Lq_, P_, 2 -> N_*M_, Lq_, P_, 2
-        sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1)
+        sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1)               # bs*n_heads, Nb, n_points, 2
         # N_*M_, D_, Lq_, P_
-        sampling_value_l_ = F.grid_sample(value_l_, sampling_grid_l_,
-                                          mode='bilinear', padding_mode='zeros', align_corners=False)
-        sampling_value_list.append(sampling_value_l_)
-    # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)
-    attention_weights = attention_weights.transpose(1, 2).reshape(N_*M_, 1, Lq_, L_*P_)
-    output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_*D_, Lq_)
+        sampling_value_l_ = F.grid_sample(value_l_, sampling_grid_l_,                 
+                                          mode='bilinear', padding_mode='zeros', align_corners=False)   # bs*n_heads, 256//n_heads, Nb, n_points,
+        sampling_value_list.append(sampling_value_l_)                                                   # [(b, c, h, w), ...]
+    # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)             bs, Nb, n_heads, n_levels, 4->
+    attention_weights = attention_weights.transpose(1, 2).reshape(N_*M_, 1, Lq_, L_*P_)                 # bs*n_heads, 1, Nb, n_levels*4
+    output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_*D_, Lq_)    # (bs*n_heads, 256//n_heads, n_levels*Nb*n_points) (bs*n_heads, 1, Nb, n_levels*n_points)
     return output.transpose(1, 2).contiguous()
 
 
@@ -113,7 +119,7 @@ class MSDeformAttn(nn.Module):
         xavier_uniform_(self.output_proj.weight.data)
         constant_(self.output_proj.bias.data, 0.)
 
-    def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_level_start_index, input_padding_mask=None):
+    def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_padding_mask=None, pred_attentions=None):
         """
         :param query                       (N, Length_{query}, C)
         :param reference_points            (N, Length_{query}, n_levels, 2), range in [0, 1], top-left (0,0), bottom-right (1, 1), including padding area
@@ -147,7 +153,12 @@ class MSDeformAttn(nn.Module):
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
-        output = _MSDeformAttnFunction.apply(
-            value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
+        # output = _MSDeformAttnFunction.apply(
+        #     value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
+        output = ms_deform_attn_core_pytorch(value=value, 
+                                             value_spatial_shapes=input_spatial_shapes, 
+                                             sampling_locations=sampling_locations,      # bs, Nb, None, n_levels, None, 2
+                                             attention_weights=attention_weights,
+                                             pred_attentions=pred_attentions)
         output = self.output_proj(output)
         return output
