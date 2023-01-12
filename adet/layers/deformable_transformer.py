@@ -229,10 +229,16 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
     def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None, pred_attentions=None):
         # self attention
+        # ========loss+线性层作用于Q=========
+        # if self.use_attention:
+        #     assert pred_attentions is not None
+        #     src_attention = src * self.attn_map(pred_attentions)
+        # src2 = self.self_attn(self.with_pos_embed(src_attention, pos), reference_points, src, spatial_shapes, level_start_index,
+        #                       padding_mask)
         if self.use_attention:
             assert pred_attentions is not None
-            src_attention = src * self.attn_map(pred_attentions)
-        src2 = self.self_attn(self.with_pos_embed(src_attention, pos), reference_points, src, spatial_shapes, level_start_index,
+            src_value = src * self.attn_map(pred_attentions)
+        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src_value, spatial_shapes, level_start_index,
                               padding_mask)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
