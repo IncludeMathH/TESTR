@@ -44,6 +44,7 @@ from adet.data.dataset_mapper import DatasetMapperWithBasis
 from adet.config import get_cfg
 from adet.checkpoint import AdetCheckpointer
 from adet.evaluation import TextEvaluator
+from visual_tools import VisualizationDemo
 from detectron2.engine.train_loop import VisualTrainer
 
 
@@ -52,6 +53,7 @@ class Trainer(DefaultTrainer):
     This is the same Trainer except that we rewrite the
     `build_train_loader`/`resume_or_load` method.
     """
+
     def build_hooks(self):
         """
         Replace `DetectionCheckpointer` with `AdetCheckpointer`.
@@ -70,7 +72,7 @@ class Trainer(DefaultTrainer):
                 )
                 ret[i] = hooks.PeriodicCheckpointer(self.checkpointer, self.cfg.SOLVER.CHECKPOINT_PERIOD)
         return ret
-    
+
     def resume_or_load(self, resume=True):
         checkpoint = self.checkpointer.resume_or_load(self.cfg.MODEL.WEIGHTS, resume=resume)
         if resume and self.checkpointer.has_checkpoint():
@@ -211,9 +213,9 @@ class Trainer(DefaultTrainer):
             # detectron2 doesn't have full model gradient clipping now
             clip_norm_val = cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE
             enable = (
-                cfg.SOLVER.CLIP_GRADIENTS.ENABLED
-                and cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE == "full_model"
-                and clip_norm_val > 0.0
+                    cfg.SOLVER.CLIP_GRADIENTS.ENABLED
+                    and cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE == "full_model"
+                    and clip_norm_val > 0.0
             )
 
             class FullModelGradientClippingOptimizer(optim):
@@ -253,7 +255,7 @@ def setup(args):
     Create configs and perform basic setups.
     """
     cfg = get_cfg()
-    cfg.set_new_allowed(True)     # because there is some new keys.
+    cfg.set_new_allowed(True)  # because there is some new keys.
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()
@@ -275,8 +277,23 @@ def main(args):
     data_loader = Trainer.build_train_loader(cfg)
     optimizer = Trainer.build_optimizer(cfg, model)
     _trainer = VisualTrainer(model, data_loader, optimizer)
-    _trainer.run_step()
+    img, pred, gt = _trainer.run_step()
 
+    # visualize pred and gt
+    visual_tool = VisualizationDemo(cfg)  # 实际使用的函数和cfg没有关系
+    pred_images, gt_images, VisImage_img = visual_tool.run_on_image_w_gt(img, pred, gt)
+
+    work_dir = '/work/dn/TESTR/output/'
+    out_filename = work_dir + 'original_img.png'
+    VisImage_img.save(out_filename)
+    for i, atten_image in enumerate(pred_images):
+        dir = work_dir + 'pred-' + str(i) + '.png'
+        print(f'the dir of pred_image {i} is {dir}')
+        atten_image.save(dir)
+    for i, gt_image in enumerate(gt_images):
+        dir = work_dir + 'gt-' + str(i) + '.png'
+        print(f'the dir of gt_image {i} is {dir}')
+        gt_image.save(dir)
 
 
 if __name__ == "__main__":

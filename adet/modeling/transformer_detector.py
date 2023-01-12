@@ -295,4 +295,9 @@ class TransformerDetector(nn.Module):
         images = ImageList.from_tensors(images)
         images_norm = self.preprocess_image(batched_inputs)
         output = self.testr(images_norm)
-        return images, output['pred_attentions']
+        if "instances" in batched_inputs[0]:
+            gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+            targets = self.prepare_targets(gt_instances)    # 字典
+            gt_attention = targets[0]['attentions'][0].tensor  # .to(device=self.device)
+            gt_attention = gt_attention.to(dtype=torch.float32)
+        return images, output['pred_attentions'], gt_attention

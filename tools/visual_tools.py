@@ -70,6 +70,49 @@ class VisualizationDemo(object):
             atten_images.append(VisImage(img_tmp.transpose(1, 2, 0)))
         return atten_images, VisImage(img)
 
+    def run_on_image_w_gt(self, img_ori, pred_attentions, gt_attention):
+        """
+        此时通过一个自定义的trainer给出原始的图像信息和预测的gt信息
+        :param img_ori:
+        :param pred_attentions:
+        :param gt_attention: B, 1, H, W
+        :return:
+        """
+        img = img_ori[0]      # 3, H, W
+        print(f'in visual_tools, img.shape = {img.shape}')
+        img = np.array(img.cpu()).transpose(1, 2, 0)   # 3, H, W -> H, W, 3   3: R, G, B
+
+        atten_images = []
+        for i, item in enumerate(pred_attentions):
+            print(f'pred_attention.shape = {item.shape}')
+            pred_shape = item.size()[-2:]
+            img_tmp = np.array(Resize(pred_shape)(img_ori[0]).cpu())
+            item = item.sigmoid().detach()
+            # if i == 3:
+            #     print(item[0][0])
+            thr = 0.5
+            img_tmp[2, :, :] = np.where(np.array(item.cpu())[0][0] > thr, 0, img_tmp[2, :, :])
+            img_tmp[1, :, :] = np.where(np.array(item.cpu())[0][0] > thr, 0, img_tmp[1, :, :])
+            img_tmp[0, :, :] = np.where(np.array(item.cpu())[0][0] > thr, 255, img_tmp[0, :, :])   # R
+            atten_images.append(VisImage(img_tmp.transpose(1, 2, 0)))
+        gt_images = []
+        for i, item in enumerate(pred_attentions):
+            """
+            可视化真值标签
+            """
+            pred_shape = item.size()[-2:]
+            gt = Resize(pred_shape)(gt_attention.cpu())
+            img_tmp = np.array(Resize(pred_shape)(img_ori[0]).cpu())
+            gt = np.array(gt.sigmoid().detach())
+            # if i == 3:
+            #     print(item[0][0])
+            thr = 0.5
+            img_tmp[2, :, :] = np.where(np.array(gt)[0] > thr, 0, img_tmp[2, :, :])
+            img_tmp[1, :, :] = np.where(np.array(gt)[0] > thr, 0, img_tmp[1, :, :])
+            img_tmp[0, :, :] = np.where(np.array(gt)[0] > thr, 255, img_tmp[0, :, :])   # R
+            gt_images.append(VisImage(img_tmp.transpose(1, 2, 0)))
+        return atten_images, gt_images, VisImage(img)
+
     def _frame_from_video(self, video):
         while video.isOpened():
             success, frame = video.read()
