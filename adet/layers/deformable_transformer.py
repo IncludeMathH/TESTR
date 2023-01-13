@@ -148,11 +148,13 @@ class DeformableTransformer(nn.Module):
                 pred_attentions_flatten.append(pred_attention)
             pred_attentions_flatten = torch.cat(pred_attentions_flatten, 1)  # bs, h1w1+h2w2+h3w3, 1
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
+        level_start_index = torch.cat(
+            (spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))  # 从哪里开始是哪个level，可以用于复原
 
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
         # encoder
-        memory = self.encoder(src_flatten, spatial_shapes, valid_ratios, lvl_pos_embed_flatten,
+        memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten,
                               mask_flatten, pred_attentions_flatten)
 
         # prepare input for decoder
@@ -177,8 +179,9 @@ class DeformableTransformer(nn.Module):
         # decoder
         hs, hs_text, inter_references = self.decoder(
             query_embed, text_embed, reference_points, memory, spatial_shapes,
-            valid_ratios, query_pos, text_pos_embed, mask_flatten, text_mask
+            level_start_index, valid_ratios, query_pos, text_pos_embed, mask_flatten, text_mask, None,
         )
+        # TODO: decoder使用pred_attention
 
         inter_references_out = inter_references
         return hs, hs_text, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
@@ -226,7 +229,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src = self.norm2(src)
         return src
 
-    def forward(self, src, pos, reference_points, spatial_shapes, padding_mask=None, pred_attentions=None):
+    def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None, pred_attentions=None):
         # self attention
         # ========loss+线性层作用于Q=========
         # if self.use_attention:
@@ -237,7 +240,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
         if self.use_attention:
             assert pred_attentions is not None
             # src_value = src * self.attn_map(pred_attentions)
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes,
+        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index,
                               padding_mask, pred_attentions)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
@@ -268,11 +271,11 @@ class DeformableTransformerEncoder(nn.Module):
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]
         return reference_points
 
-    def forward(self, src, spatial_shapes, valid_ratios, pos=None, padding_mask=None, pred_attentions=None):
+    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None, pred_attentions=None):
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
         for _, layer in enumerate(self.layers):
-            output = layer(output, pos, reference_points, spatial_shapes, padding_mask, pred_attentions)
+            output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask, pred_attentions)
 
         return output
 
@@ -284,7 +287,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         super().__init__()
 
         # cross attention
-        self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points, encoder=False)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
@@ -311,8 +314,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
         tgt = self.norm3(tgt)
         return tgt
 
-    def forward(self, tgt, query_pos, reference_points, src, src_spatial_shapes,
-                src_padding_mask=None):
+    def forward(self, tgt, query_pos, reference_points, src, src_spatial_shapes, level_start_index,
+                src_padding_mask=None, pred_attentions=None):
         # self attention
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
@@ -322,7 +325,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         # cross attention
         tgt2 = self.cross_attn(self.with_pos_embed(tgt, query_pos),
                                reference_points,
-                               src, src_spatial_shapes, src_padding_mask)
+                               src, src_spatial_shapes, level_start_index, src_padding_mask, pred_attentions)
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
 
@@ -342,8 +345,8 @@ class DeformableTransformerDecoder(nn.Module):
         self.bbox_embed = None
         self.class_embed = None
 
-    def forward(self, tgt, reference_points, src, src_spatial_shapes, src_valid_ratios,
-                query_pos=None, src_padding_mask=None):
+    def forward(self, tgt, reference_points, src, src_spatial_shapes, level_start_index, src_valid_ratios,
+                query_pos=None, src_padding_mask=None, pred_attentions=None):
         output = tgt
 
         intermediate = []
@@ -355,8 +358,8 @@ class DeformableTransformerDecoder(nn.Module):
             else:
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
-            output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes,
-                           src_padding_mask)
+            output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, level_start_index,
+                           src_padding_mask, pred_attentions)
 
             # hack implementation for iterative bounding box refinement
             if self.bbox_embed is not None:
@@ -389,7 +392,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
 
         ## attn for location branch
         # cross attention
-        self.attn_cross = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.attn_cross = MSDeformAttn(d_model, n_levels, n_heads, n_points, encoder=False)
         self.dropout_cross = nn.Dropout(dropout)
         self.norm_cross = nn.LayerNorm(d_model)
 
@@ -424,7 +427,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         self.norm_inter_text = nn.LayerNorm(d_model)
 
         # cross attention for text
-        self.attn_cross_text = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.attn_cross_text = MSDeformAttn(d_model, n_levels, n_heads, n_points, encoder=False)
         self.dropout_cross_text = nn.Dropout(dropout)
         self.norm_cross_text = nn.LayerNorm(d_model)
 
@@ -453,7 +456,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         return tgt
 
     def forward(self, tgt, query_pos, tgt_text, query_pos_text, reference_points, src, src_spatial_shapes,
-                src_padding_mask=None, text_padding_mask=None):
+                level_start_index, src_padding_mask=None, text_padding_mask=None, pred_attentions=None):
         ## input size
         # tgt:                batch_size, n_objects, n_points, embed_dim
         # query_pos:          batch_size, n_objects, n_points, embed_dim
@@ -484,7 +487,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         reference_points_loc = reference_points[:, :, None, :, :].repeat(1, 1, tgt_inter.shape[2], 1, 1)
         tgt2 = self.attn_cross(self.with_pos_embed(tgt_inter, query_pos).flatten(1, 2),
                                reference_points_loc.flatten(1, 2),
-                               src, src_spatial_shapes, src_padding_mask).reshape(tgt_inter.shape)
+                               src, src_spatial_shapes, level_start_index, src_padding_mask, pred_attentions).reshape(tgt_inter.shape)
         tgt_inter = tgt_inter + self.dropout_cross(tgt2)
         tgt = self.norm_cross(tgt_inter)
 
@@ -514,7 +517,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         reference_points_text = reference_points[:, :, None, :, :].repeat(1, 1, tgt_text_inter.shape[2], 1, 1)
         tgt2_text_cm = self.attn_cross_text(self.with_pos_embed(tgt_text_inter, query_pos_text).flatten(1, 2),
                                             reference_points_text.flatten(1, 2),
-                                            src, src_spatial_shapes, src_padding_mask).reshape(
+                                            src, src_spatial_shapes, level_start_index, src_padding_mask, pred_attentions).reshape(
             tgt_text_inter.shape)
 
         tgt_text_inter = tgt_text_inter + self.dropout_cross_text(tgt2_text_cm)
@@ -537,8 +540,8 @@ class DeformableCompositeTransformerDecoder(nn.Module):
         self.bbox_embed = None
         self.class_embed = None
 
-    def forward(self, tgt, tgt_text, reference_points, src, src_spatial_shapes, src_valid_ratios,
-                query_pos=None, query_pos_text=None, src_padding_mask=None, text_padding_mask=None):
+    def forward(self, tgt, tgt_text, reference_points, src, src_spatial_shapes, level_start_index, src_valid_ratios,
+                query_pos=None, query_pos_text=None, src_padding_mask=None, text_padding_mask=None, pred_attentions=None):
         output, output_text = tgt, tgt_text
 
         intermediate = []
@@ -552,7 +555,7 @@ class DeformableCompositeTransformerDecoder(nn.Module):
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
             output, output_text = layer(output, query_pos, output_text, query_pos_text, reference_points_input, src,
-                                        src_spatial_shapes, src_padding_mask, text_padding_mask)
+                                        src_spatial_shapes, level_start_index, src_padding_mask, text_padding_mask, pred_attentions)
 
             if self.return_intermediate:
                 intermediate.append(output)

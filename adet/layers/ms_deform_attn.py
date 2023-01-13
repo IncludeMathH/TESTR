@@ -72,7 +72,7 @@ def _is_power_of_2(n):
 
 
 class MSDeformAttn(nn.Module):
-    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4):
+    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, encoder=True):
         """
         Multi-Scale Deformable Attention Module
         :param d_model      hidden dimension
@@ -96,7 +96,10 @@ class MSDeformAttn(nn.Module):
         self.n_heads = n_heads
         self.n_points = n_points
 
-        self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
+        if encoder:
+            self.sampling_offsets = nn.Conv2d(in_channels=1, out_channels=n_heads * n_levels * n_points * 2, kernel_size=3, stride=1,padding=1)
+        else:
+            self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
         self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
         self.value_proj = nn.Linear(d_model, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
@@ -119,7 +122,7 @@ class MSDeformAttn(nn.Module):
         xavier_uniform_(self.output_proj.weight.data)
         constant_(self.output_proj.bias.data, 0.)
 
-    def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_padding_mask=None, pred_attentions=None):
+    def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_level_start_index, input_padding_mask=None, pred_attentions=None):
         """
         :param query                       (N, Length_{query}, C)
         :param reference_points            (N, Length_{query}, n_levels, 2), range in [0, 1], top-left (0,0), bottom-right (1, 1), including padding area
@@ -139,7 +142,10 @@ class MSDeformAttn(nn.Module):
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
         value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
-        sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
+        if pred_attentions is not None:  # which means in encoder
+            sampling_offsets = self.get_sampling_offsets(input_spatial_shapes, pred_attentions).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
+        else:            # which means in decoder
+            sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
         attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels * self.n_points)
         attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)
         # N, Len_q, n_heads, n_levels, n_points, 2
@@ -153,12 +159,20 @@ class MSDeformAttn(nn.Module):
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
-        # output = _MSDeformAttnFunction.apply(
-        #     value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
-        output = ms_deform_attn_core_pytorch(value=value, 
-                                             value_spatial_shapes=input_spatial_shapes, 
-                                             sampling_locations=sampling_locations,      # bs, Nb, None, n_levels, None, 2
-                                             attention_weights=attention_weights,
-                                             pred_attentions=pred_attentions)
+        output = _MSDeformAttnFunction.apply(
+            value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
         output = self.output_proj(output)
         return output
+
+    def get_sampling_offsets(self, input_spatial_shapes, pred_attentions):
+        bs, N, c = pred_attentions.shape
+        pred_attentions = pred_attentions.sigmoid()
+        pred_list = pred_attentions.split([H_ * W_ for H_, W_ in input_spatial_shapes], dim=1)
+        sampling_list = []
+        for lid_, (H_, W_) in enumerate(input_spatial_shapes):
+            pred_l = pred_list[lid_].transpose(1, 2).reshape(bs, 1, H_, W_)  # (bs, H_*W_, 1)->(bs, 1, H_*W_)->(bs, 1, H_, W_)
+            sampling_l = self.sampling_offsets(pred_l)            # (bs, 1, H_, W_)->(bs, n_heads * n_levels * n_points * 2, H_, W_)
+            sampling_l = sampling_l.flatten(-2).transpose(1, 2)    # ->(bs, H_*W_, n_heads * n_levels * n_points * 2)
+            sampling_list.append(sampling_l)
+        sampling_offsets = torch.cat(sampling_list, dim=1)        # ->(bs, Nb, n_heads * n_levels * n_points * 2)
+        return sampling_offsets
