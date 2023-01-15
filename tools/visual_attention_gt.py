@@ -281,9 +281,9 @@ def main(args):
 
     # visualize pred and gt
     visual_tool = VisualizationDemo(cfg)  # 实际使用的函数和cfg没有关系
-    pred_images, gt_images, VisImage_img = visual_tool.run_on_image_w_gt(img, pred, gt)
+    pred_images, gt_images, VisImage_img = visual_tool.run_on_image_w_gt(img, pred, gt, use_maxpool=True)
 
-    work_dir = '/work/dn/TESTR/output/'
+    work_dir = '/data1/dn/TESTR/output/use_maxpool/'
     out_filename = work_dir + 'original_img.png'
     VisImage_img.save(out_filename)
     for i, atten_image in enumerate(pred_images):

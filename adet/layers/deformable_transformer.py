@@ -141,6 +141,7 @@ class DeformableTransformer(nn.Module):
         mask_flatten = torch.cat(mask_flatten, 1)
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
         # use global attention
+        pred_attentions_flatten = None
         if self.use_attention:
             pred_attentions_flatten = []
             for i, pred_attention in enumerate(pred_attentions):
@@ -237,7 +238,10 @@ class DeformableTransformerEncoderLayer(nn.Module):
         #                       padding_mask)
         if self.use_attention:
             assert pred_attentions is not None
+            print(f'in deformable_transformer, global attention prediction is used! ')
             src_value = src * self.attn_map(pred_attentions)
+        else:
+            src_value = src
         src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src_value, spatial_shapes, level_start_index,
                               padding_mask)
         src = src + self.dropout1(src2)

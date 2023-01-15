@@ -70,12 +70,12 @@ class VisualizationDemo(object):
             atten_images.append(VisImage(img_tmp.transpose(1, 2, 0)))
         return atten_images, VisImage(img)
 
-    def run_on_image_w_gt(self, img_ori, pred_attentions, gt_attention):
+    def run_on_image_w_gt(self, img_ori, pred_attentions, gt_attention, use_maxpool=True):
         """
         此时通过一个自定义的trainer给出原始的图像信息和预测的gt信息
         :param img_ori:
         :param pred_attentions:
-        :param gt_attention: B, 1, H, W
+        :param gt_attention: 1, H, W
         :return:
         """
         img = img_ori[0]      # 3, H, W
@@ -101,7 +101,13 @@ class VisualizationDemo(object):
             可视化真值标签
             """
             pred_shape = item.size()[-2:]
-            gt = Resize(pred_shape)(gt_attention.cpu())
+            if use_maxpool:
+                import torch.nn.functional as F
+                kernel_size = gt_attention.size(1) // pred_shape[0]
+                gt = F.max_pool2d(gt_attention, kernel_size=kernel_size)
+                gt = Resize(pred_shape)(gt.cpu())
+            else:
+                gt = Resize(pred_shape)(gt_attention.cpu())
             img_tmp = np.array(Resize(pred_shape)(img_ori[0]).cpu())
             gt = np.array(gt.sigmoid().detach())
             # if i == 3:
