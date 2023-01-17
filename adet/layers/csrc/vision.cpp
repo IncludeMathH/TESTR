@@ -1,5 +1,6 @@
 // Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 #include "DeformAttn/ms_deform_attn.h"
+#include "DeformAttn/ms_deform_attn.h"
 
 namespace adet {
 
