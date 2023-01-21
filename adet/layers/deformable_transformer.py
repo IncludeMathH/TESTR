@@ -208,15 +208,6 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
         # whether to use global attention
         self.use_attention = use_attention
-        if self.use_attention:
-            # self.attn_map = nn.Sequential(
-            #     nn.Linear(1, 4), nn.Tanh(),
-            #     nn.Linear(4, 1),
-            #     nn.Sigmoid())
-            self.attn_map = nn.Sequential(
-                nn.Sigmoid(),
-                nn.Linear(1, 1)
-                )
 
     @staticmethod
     def with_pos_embed(tensor, pos):
@@ -239,10 +230,9 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src_value = src
         if self.use_attention:
             assert pred_attentions is not None
-            src_value = src * self.attn_map(pred_attentions)
-            print('gt_attentions are uesd!')
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src_value, spatial_shapes, level_start_index,
-                              padding_mask)
+            # src_value = src * self.attn_map(pred_attentions)
+        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index,
+                              padding_mask, pred_attentions)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
