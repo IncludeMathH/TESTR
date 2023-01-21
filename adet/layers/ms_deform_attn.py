@@ -36,65 +36,6 @@ class _MSDeformAttnFunction(torch.autograd.Function):
         return grad_value, None, None, grad_sampling_loc, grad_attn_weight, None
 
 
-def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations, attention_weights, pred_attentions=None):
-    """
-    value is sampled and attention is calculated
-    :param value: (bs, H1W1+H2W2+..., n_heads, C//n_heads)->
-                value_list (n_levles, bs, H_l*W_l, n_heads, C//n_heads) ->
-                value_l    (bs*n_heads, C//n_heads, H_l, W_l) ->
-                sampling_value_l_  (bs*n_heads, C//n_heads, Nq, n_points) -> torch.stack(dim=-2)
-                (bs*n_heads, C//n_heads, Nq, n_levels, n_points)  ->
-                (bs*n_heads, C//n_heads, Nq, n_levels*n_points)
-    :param value_spatial_shapes:
-    :param sampling_locations:
-    :param attention_weights: (bs, Nq, n_heads, n_levels, n_points) -> Softmax ->
-                              (bs, Nq, n_heads, n_levels, n_points) ->
-                              (bs*n_heads, 1, Nq, n_levels*n_points)
-    :param pred_attentions: (bs, H1W1+H2W2+..., 1) ->
-                            [(bs, H1W1, 1), ...] -> (bs, 1, H1, W1), ... -> (bs*n_heads, 1, H1, W1), ...
-                            (bs*n_heads, 1, Nq, n_points), ... -> torch.stack(dim=-2) ->
-                            (bs*n_heads, 1, Nq, n_levels, n_points) ->
-                            (bs*n_heads, 1, Nq, n_levels*n_points)
-                            then add into attention and softmax.
-
-    :return:
-    """
-    # for debug and test only,
-    # need to use cuda version instead
-    N_, S_, M_, D_ = value.shape       # it's also the shape of
-    _, Lq_, M_, L_, P_, _ = sampling_locations.shape
-    value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
-    if pred_attentions is not None:
-        pred_list = pred_attentions.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)  # [(bs, H1W1, 1), ...]
-        sampling_pred_list = []
-    sampling_grids = 2 * sampling_locations - 1
-    sampling_value_list = []
-    for lid_, (H_, W_) in enumerate(value_spatial_shapes):
-        # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
-        value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_*M_, D_, H_, W_)
-        # N_, Lq_, M_, P_, 2 -> N_, M_, Lq_, P_, 2 -> N_*M_, Lq_, P_, 2
-        sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1)
-        # N_*M_, D_, Lq_, P_
-        sampling_value_l_ = F.grid_sample(value_l_, sampling_grid_l_,
-                                          mode='bilinear', padding_mode='zeros', align_corners=False)
-        sampling_value_list.append(sampling_value_l_)
-        if pred_attentions is not None:
-            pred_l = pred_list[lid_].transpose(1, 2).reshape(N_, 1, H_, W_).repeat(M_, 1, 1, 1)
-            sampling_pred_l = F.grid_sample(pred_l, sampling_grid_l_,
-                                            mode='bilinear', padding_mode='zeros', align_corners=False)
-            sampling_pred_list.append(sampling_pred_l)
-
-    attention_weights = attention_weights.transpose(1, 2).flatten(0, 1).reshape(N_ * M_, 1, Lq_, L_, P_)
-    if pred_attentions is not None:
-        pred_to_attn_weights = torch.stack(sampling_pred_list, dim=-2)   # (bs*n_heads, 1, Nq, n_levels, n_points)
-        attention_weights = attention_weights + pred_to_attn_weights
-    attention_weights = attention_weights.flatten(-2)
-    attention_weights = F.softmax(attention_weights, -1).view(N_, M_, 1, Lq_, L_, P_)
-    # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)
-    attention_weights = attention_weights.reshape(N_*M_, 1, Lq_, L_*P_)
-    output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_*D_, Lq_)
-    return output.transpose(1, 2).contiguous()
-
 
 def _is_power_of_2(n):
     if (not isinstance(n, int)) or (n < 0):
@@ -103,7 +44,7 @@ def _is_power_of_2(n):
 
 
 class MSDeformAttn(nn.Module):
-    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4):
+    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, use_gaussian=True):
         """
         Multi-Scale Deformable Attention Module
         :param d_model      hidden dimension
@@ -133,6 +74,13 @@ class MSDeformAttn(nn.Module):
         self.output_proj = nn.Linear(d_model, d_model)
 
         self._reset_parameters()
+
+        if use_gaussian:
+            self.conv2d_gaussian = nn.Conv2d(1, 1, (3, 3), padding=1, padding_mode='reflect')
+            w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
+                                           [0.6065, 1., 0.6065],
+                                           [0.3679, 0.6065, 0.3679]]]])
+            self.conv2d_gaussian.weight = nn.Parameter(w)
 
     def _reset_parameters(self):
         constant_(self.sampling_offsets.weight.data, 0.)
@@ -183,7 +131,70 @@ class MSDeformAttn(nn.Module):
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
-        output = ms_deform_attn_core_pytorch(
+        output = self.ms_deform_attn_core_pytorch(
             value, input_spatial_shapes, sampling_locations, attention_weights, pred_attentions)
         output = self.output_proj(output)
         return output
+
+    def ms_deform_attn_core_pytorch(self, value, value_spatial_shapes, sampling_locations, attention_weights,
+                                    pred_attentions=None):
+        """
+        value is sampled and attention is calculated
+        :param value: (bs, H1W1+H2W2+..., n_heads, C//n_heads)->
+                    value_list (n_levles, bs, H_l*W_l, n_heads, C//n_heads) ->
+                    value_l    (bs*n_heads, C//n_heads, H_l, W_l) ->
+                    sampling_value_l_  (bs*n_heads, C//n_heads, Nq, n_points) -> torch.stack(dim=-2)
+                    (bs*n_heads, C//n_heads, Nq, n_levels, n_points)  ->
+                    (bs*n_heads, C//n_heads, Nq, n_levels*n_points)
+        :param value_spatial_shapes:
+        :param sampling_locations:
+        :param attention_weights: (bs, Nq, n_heads, n_levels, n_points) -> Softmax ->
+                                  (bs, Nq, n_heads, n_levels, n_points) ->
+                                  (bs*n_heads, 1, Nq, n_levels*n_points)
+        :param pred_attentions: (bs, H1W1+H2W2+..., 1) ->
+                                [(bs, H1W1, 1), ...] -> (bs, 1, H1, W1), ... -> (bs*n_heads, 1, H1, W1), ...
+                                (bs*n_heads, 1, Nq, n_points), ... -> torch.stack(dim=-2) ->
+                                (bs*n_heads, 1, Nq, n_levels, n_points) ->
+                                (bs*n_heads, 1, Nq, n_levels*n_points)
+                                then add into attention and softmax.
+
+        :return:
+        """
+        # for debug and test only,
+        # need to use cuda version instead
+        N_, S_, M_, D_ = value.shape  # it's also the shape of
+        _, Lq_, M_, L_, P_, _ = sampling_locations.shape
+        value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
+        if pred_attentions is not None:
+            pred_list = pred_attentions.split([H_ * W_ for H_, W_ in value_spatial_shapes],
+                                              dim=1)  # [(bs, H1W1, 1), ...]
+            sampling_pred_list = []
+        sampling_grids = 2 * sampling_locations - 1
+        sampling_value_list = []
+        for lid_, (H_, W_) in enumerate(value_spatial_shapes):
+            # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
+            value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_ * M_, D_, H_, W_)
+            # N_, Lq_, M_, P_, 2 -> N_, M_, Lq_, P_, 2 -> N_*M_, Lq_, P_, 2
+            sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1)
+            # N_*M_, D_, Lq_, P_
+            sampling_value_l_ = F.grid_sample(value_l_, sampling_grid_l_,
+                                              mode='bilinear', padding_mode='zeros', align_corners=False)
+            sampling_value_list.append(sampling_value_l_)
+            if pred_attentions is not None:
+                pred_l = pred_list[lid_].transpose(1, 2).reshape(N_, 1, H_, W_).repeat(M_, 1, 1, 1)
+                pred_l = self.conv2d_gaussian(pred_l)
+                sampling_pred_l = F.grid_sample(pred_l, sampling_grid_l_,
+                                                mode='bilinear', padding_mode='zeros', align_corners=False)
+                sampling_pred_list.append(sampling_pred_l)
+
+        attention_weights = attention_weights.transpose(1, 2).flatten(0, 1).reshape(N_ * M_, 1, Lq_, L_, P_)
+        if pred_attentions is not None:
+            pred_to_attn_weights = torch.stack(sampling_pred_list, dim=-2)  # (bs*n_heads, 1, Nq, n_levels, n_points)
+            attention_weights = attention_weights + pred_to_attn_weights
+        attention_weights = attention_weights.flatten(-2)
+        attention_weights = F.softmax(attention_weights, -1).view(N_, M_, 1, Lq_, L_, P_)
+        # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)
+        attention_weights = attention_weights.reshape(N_ * M_, 1, Lq_, L_ * P_)
+        output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_ * D_,
+                                                                                                         Lq_)
+        return output.transpose(1, 2).contiguous()
