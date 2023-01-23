@@ -44,7 +44,7 @@ def _is_power_of_2(n):
 
 
 class MSDeformAttn(nn.Module):
-    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, use_gaussian=True):
+    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4):
         """
         Multi-Scale Deformable Attention Module
         :param d_model      hidden dimension
@@ -74,13 +74,6 @@ class MSDeformAttn(nn.Module):
         self.output_proj = nn.Linear(d_model, d_model)
 
         self._reset_parameters()
-
-        if use_gaussian:
-            self.conv2d_gaussian = nn.Conv2d(1, 1, (3, 3), padding=1, padding_mode='reflect')
-            w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
-                                           [0.6065, 1., 0.6065],
-                                           [0.3679, 0.6065, 0.3679]]]])
-            self.conv2d_gaussian.weight = nn.Parameter(w)
 
     def _reset_parameters(self):
         constant_(self.sampling_offsets.weight.data, 0.)
@@ -166,6 +159,7 @@ class MSDeformAttn(nn.Module):
         _, Lq_, M_, L_, P_, _ = sampling_locations.shape
         value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
         if pred_attentions is not None:
+            # print(f'pred_attentions is Not None!!!')
             pred_list = pred_attentions.split([H_ * W_ for H_, W_ in value_spatial_shapes],
                                               dim=1)  # [(bs, H1W1, 1), ...]
             sampling_pred_list = []
@@ -182,7 +176,6 @@ class MSDeformAttn(nn.Module):
             sampling_value_list.append(sampling_value_l_)
             if pred_attentions is not None:
                 pred_l = pred_list[lid_].transpose(1, 2).reshape(N_, 1, H_, W_).repeat(M_, 1, 1, 1)
-                pred_l = self.conv2d_gaussian(pred_l)
                 sampling_pred_l = F.grid_sample(pred_l, sampling_grid_l_,
                                                 mode='bilinear', padding_mode='zeros', align_corners=False)
                 sampling_pred_list.append(sampling_pred_l)

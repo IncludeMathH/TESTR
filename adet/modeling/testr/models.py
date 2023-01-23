@@ -135,6 +135,18 @@ class TESTR(nn.Module):
 
         self.to(self.device)
 
+        # ===============使用高斯滤波========
+        use_gaussian = False
+        if self.use_attention:
+            use_gaussian = cfg.MODEL.ATTENTION.USE_GAUSSIAN
+        if use_gaussian:
+            self.conv2d_gaussian = nn.Conv2d(1, 1, (3, 3), padding=1, padding_mode='reflect')
+            w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
+                                           [0.6065, 1., 0.6065],
+                                           [0.3679, 0.6065, 0.3679]]]])
+            self.conv2d_gaussian.weight = nn.Parameter(w)
+        self.use_gaussian = use_gaussian
+
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
@@ -187,13 +199,16 @@ class TESTR(nn.Module):
         # if use global attention, then do:
         if self.use_attention:
             pred_attentions = []
+            pred_attentions_gaussian = []
             for src in srcs:            # src is supposed to be (bs, c_l, H_l, W_l)
                 pred_attention = self.pred_attention(src)
                 pred_attentions.append(pred_attention)
+                pred_attentions_gaussian.append(self.conv2d_gaussian(pred_attention))
         else:
             pred_attentions = None
         hs, hs_text, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
-            srcs, masks, pos, ctrl_point_embed, text_embed, text_pos_embed, text_mask=None, pred_attentions=pred_attentions)
+            srcs, masks, pos, ctrl_point_embed, text_embed, text_pos_embed, text_mask=None,
+            pred_attentions=pred_attentions_gaussian if self.use_gaussian else pred_attentions)
 
         outputs_classes = []
         outputs_coords = []
