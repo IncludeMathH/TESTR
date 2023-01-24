@@ -126,6 +126,18 @@ class DeformableTransformer(nn.Module):
         return valid_ratio
 
     def forward(self, srcs, masks, pos_embeds, query_embed, text_embed, text_pos_embed, text_mask=None, pred_attentions=None):
+        """
+
+        :param srcs:
+        :param masks:
+        :param pos_embeds:  ctrl_point_embed
+        :param query_embed:
+        :param text_embed:
+        :param text_pos_embed:
+        :param text_mask:
+        :param pred_attentions:
+        :return:
+        """
         # prepare input for encoder
         src_flatten = []
         mask_flatten = []

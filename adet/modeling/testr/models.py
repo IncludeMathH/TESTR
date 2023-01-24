@@ -199,11 +199,13 @@ class TESTR(nn.Module):
         # if use global attention, then do:
         if self.use_attention:
             pred_attentions = []
-            pred_attentions_gaussian = []
+            if self.use_gaussian:
+                pred_attentions_gaussian = []
             for src in srcs:            # src is supposed to be (bs, c_l, H_l, W_l)
                 pred_attention = self.pred_attention(src)
                 pred_attentions.append(pred_attention)
-                pred_attentions_gaussian.append(self.conv2d_gaussian(pred_attention))
+                if self.use_gaussian:
+                    pred_attentions_gaussian.append(self.conv2d_gaussian(pred_attention))
         else:
             pred_attentions = None
         hs, hs_text, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
