@@ -76,7 +76,7 @@ def annotations_to_instances(annos, image_size, mask_format="polygon"):
 
     # add global attention
     attention = np.stack(
-            [BoxMode.convert(obj["bbox"], obj["bbox_mode"], BoxMode.XYXY_ABS) for obj in annos])
+            [BoxMode.convert(obj["bbox"][None, ...], obj["bbox_mode"], BoxMode.XYWH_ABS).squeeze() for obj in annos])
     # 新增标注.此处假设segm都只含有一个多边形
     attention_mask = torch.from_numpy(np.ascontiguousarray(polygons_to_bitmask(attention, *image_size)))
     attentions = BitMasks(
