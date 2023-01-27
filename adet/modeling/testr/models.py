@@ -146,7 +146,7 @@ class TESTR(nn.Module):
             w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
                                            [0.6065, 1., 0.6065],
                                            [0.3679, 0.6065, 0.3679]]]])
-            self.conv2d_gaussian.weight = nn.Parameter(w, requires_grad=False)
+            self.conv2d_gaussian.weight = nn.Parameter(w)
         self.use_gaussian = use_gaussian
 
     def forward(self, samples: NestedTensor):
