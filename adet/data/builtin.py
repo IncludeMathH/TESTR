@@ -44,6 +44,8 @@ _PREDEFINED_SPLITS_TEXT = {
     "icdar2019_train": ("icdar2019/train_images", "icdar2019/train_poly.json"),
     "textocr_train": ("textocr/train_images", "textocr/annotations/train_poly.json"),
     "textocr_val": ("textocr/train_images", "textocr/annotations/val_poly.json"),
+    # datasets with global attention annotations
+    "ctw1500_word_poly_mask_train": ("CTW1500/ctwtrain_text_image", "CTW1500/annotations/ctw1500_train_poly_segm.json"),
 }
 
 metadata_text = {
