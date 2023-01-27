@@ -129,12 +129,13 @@ class DeformableTransformer(nn.Module):
     def forward(self, srcs, masks, pos_embeds, query_embed, text_embed, text_pos_embed, text_mask=None, pred_attentions=None):
         """
 
-        :param srcs:
-        :param masks:
-        :param pos_embeds:  ctrl_point_embed
-        :param query_embed:
-        :param text_embed:
-        :param text_pos_embed:
+        :param srcs List(Tensor): Tensor: (b, c, hl, wl)
+        :param masks List(Tensor): 同样从backbone得到，标记哪些位置是补零的结果而哪些不是
+        :param pos_embeds List(Tensor): 从backbone得到，属于黑盒子
+        :param query_embed:(Tensor)  ctrl_point_embed  (self.num_proposals, self.num_ctrl_points, self.d_model)
+                    nn.Embedding(self.num_ctrl_points, self.d_model).weight[None, ...].repeat(self.num_proposals, 1, 1)
+        :param text_embed:(Tensor) similar to query_ebed (self.num_proposals, self.max_text_len, self.d_model)
+        :param text_pos_embed:(Tensor) 对text_embed进行位置编码 (self.num_proposals, self.max_text_len, self.d_model)
         :param text_mask:
         :param pred_attentions:
         :return:
@@ -238,6 +239,17 @@ class DeformableTransformerEncoderLayer(nn.Module):
         return src
 
     def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None, pred_attentions=None):
+        """
+
+        :param src: (bs, h1w1+h2w2+h3w3,c)
+        :param pos: (bs, h1w1+h2w2+h3w3,c)  位置编码
+        :param reference_points: 只是[-1, 1)范围内的格子罢了
+        :param spatial_shapes:
+        :param level_start_index:
+        :param padding_mask:
+        :param pred_attentions:
+        :return:
+        """
         # self attention
         # ========loss+线性层作用于Q=========
         # if self.use_attention:
@@ -303,6 +315,17 @@ class DeformableTransformerEncoder(nn.Module):
         return reference_points
 
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None, pred_attentions=None):
+        """
+
+        :param src: (bs, h1w1+h2w2+h3w3, c)
+        :param spatial_shapes:
+        :param level_start_index:
+        :param valid_ratios:
+        :param pos: 位置编码+层次编码 (bs, h1w1+h2w2+h3w3, c)
+        :param padding_mask: 推测是哪些位置是补零得到的 (bs, h1w1+h2w2+h3w3)
+        :param pred_attentions:
+        :return:
+        """
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
         for _, layer in enumerate(self.layers):
