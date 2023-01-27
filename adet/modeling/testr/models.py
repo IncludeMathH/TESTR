@@ -65,12 +65,14 @@ class TESTR(nn.Module):
         if self.use_attention:
             self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
             use_attention_in_transformer = cfg.MODEL.ATTENTION.IN_TRANSFORMER
+        mode = cfg.MODEL.mode
         self.transformer = DeformableTransformer(
             d_model=self.d_model, nhead=self.nhead, num_encoder_layers=self.num_encoder_layers,
             num_decoder_layers=self.num_decoder_layers, dim_feedforward=self.dim_feedforward,
             dropout=self.dropout, activation=self.activation, return_intermediate_dec=self.return_intermediate_dec,
             num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points,
             enc_n_points=self.enc_n_points, num_proposals=self.num_proposals, use_attention=use_attention_in_transformer,
+            mode=mode,
         )
         self.ctrl_point_class = nn.Linear(self.d_model, self.num_classes)
         self.ctrl_point_coord = MLP(self.d_model, self.d_model, 2, 3)

@@ -26,7 +26,7 @@ class DeformableTransformer(nn.Module):
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4, enc_n_points=4,
-                 num_proposals=300, use_attention=False):
+                 num_proposals=300, use_attention=False, mode='cuda'):
         super().__init__()
 
         self.d_model = d_model
@@ -36,7 +36,8 @@ class DeformableTransformer(nn.Module):
         self.use_attention = use_attention
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points, use_attention)
+                                                          num_feature_levels, nhead, enc_n_points, use_attention,
+                                                          mode=mode)
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
 
         decoder_layer = DeformableCompositeTransformerDecoderLayer(d_model, dim_feedforward,
@@ -207,11 +208,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4, use_attention=False):
+                 n_levels=4, n_heads=8, n_points=4, use_attention=False, mode='cuda'):
         super().__init__()
 
         # self attention
-        self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points, mode)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
@@ -417,12 +418,12 @@ class DeformableTransformerDecoder(nn.Module):
 class DeformableCompositeTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4):
+                 n_levels=4, n_heads=8, n_points=4, mode='cuda'):
         super().__init__()
 
         ## attn for location branch
         # cross attention
-        self.attn_cross = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.attn_cross = MSDeformAttn(d_model, n_levels, n_heads, n_points, mode)
         self.dropout_cross = nn.Dropout(dropout)
         self.norm_cross = nn.LayerNorm(d_model)
 
@@ -457,7 +458,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         self.norm_inter_text = nn.LayerNorm(d_model)
 
         # cross attention for text
-        self.attn_cross_text = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.attn_cross_text = MSDeformAttn(d_model, n_levels, n_heads, n_points, mode)
         self.dropout_cross_text = nn.Dropout(dropout)
         self.norm_cross_text = nn.LayerNorm(d_model)
 

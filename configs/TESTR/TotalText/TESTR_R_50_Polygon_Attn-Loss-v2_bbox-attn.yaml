@@ -18,6 +18,7 @@ MODEL:
     ENABLED: True
     IN_TRANSFORMER: False
     USE_GAUSSIAN: False
+  mode: 'cuda'
 SOLVER:
   IMS_PER_BATCH: 4      # 8
   BASE_LR: 5e-6         # 1e-5
