@@ -68,18 +68,13 @@ def loss_attentions(outputs, targets, indices, num_inst):
         for key in outputs.keys():
             print(f'key = {key}')
         print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
-    else:
-        # print('bingo~~~~~~~~~~~~~~~~~~~~~~')
-        pass
     device = outputs['pred_attentions'][0].device
-    gt_attention = targets[0]['attentions'][0].tensor.to(device=device)
-    gt_attention = gt_attention.to(dtype=torch.float32)
+    gt_attention = targets[0]['attentions'][0].tensor.to(device=device, dtype=torch.float32)
 
     attention_loss = []
     for item in outputs['pred_attentions']:
         pred_attention = item[0, 0]          # item: (B, 1, H, W)
-        feat_shape = pred_attention.size()
-        gt = Resize(feat_shape)(gt_attention).squeeze(0)
+        gt = F.interpolate(gt_attention[None], size=pred_attention.shape[-2:]).squeeze(0).squeeze(0)
         loss_tmp = F.binary_cross_entropy_with_logits(pred_attention, gt, reduction="mean")
         attention_loss.append(loss_tmp)
     return {'loss_attention': sum(attention_loss)/len(attention_loss)}

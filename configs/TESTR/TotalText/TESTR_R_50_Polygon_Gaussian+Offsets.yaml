@@ -26,5 +26,4 @@ TEST:
   USE_LEXICON: True
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/UseLexicon/attention-loss+in-transformer+attn_dev-3_gaussian"
-
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/UseLexicon/attention-loss+in-transformer+attn_dev-3_gaussian+offsets"
