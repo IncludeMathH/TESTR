@@ -190,10 +190,12 @@ class MSDeformAttn(nn.Module):
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
         value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
-        sampling_offsets = self.sampling_offsets(
-            query + pred_attentions if pred_attentions is not None else query).view(N, Len_q, self.n_heads,
-                                                                                    self.n_levels, self.n_points, 2)
-        # N, Len_q, n_heads, n_levels, n_points, 2
+        # 全局预测影响offsets：效果不好
+        # sampling_offsets = self.sampling_offsets(
+        #     query + pred_attentions if pred_attentions is not None else query).view(N, Len_q, self.n_heads,
+        #                                                                             self.n_levels, self.n_points, 2)
+        sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads,
+                                                             self.n_levels, self.n_points, 2)
         if reference_points.shape[-1] == 2:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
             sampling_locations = reference_points[:, :, None, :, None, :] \
