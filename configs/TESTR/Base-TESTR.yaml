@@ -13,7 +13,9 @@ MODEL:
     INFERENCE_TH_TEST: 0.45
   ATTENTION:
     ENABLED: True
-    IN_TRANSFORMER: False
+    IN_TRANSFORMER: True
+    USE_GAUSSIAN: True
+  mode: 'cuda'
 SOLVER:
   GRAD_ACC:
     ENABLED: False

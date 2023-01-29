@@ -14,6 +14,11 @@ MODEL:
     NUM_QUERIES: 100
     ENC_N_POINTS: 4
     DEC_N_POINTS: 4
+  ATTENTION:
+    ENABLED: True
+    IN_TRANSFORMER: True
+    USE_GAUSSIAN: True
+  mode: 'pytorch'
 SOLVER:
   IMS_PER_BATCH: 4      # 8
   BASE_LR: 5e-6         # 1e-5
@@ -23,12 +28,8 @@ SOLVER:
   MAX_ITER: 80000        # 40000       # 20000
   CHECKPOINT_PERIOD: 1000
 TEST:
-  USE_LEXICON: True
+  USE_LEXICON: False
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-<<<<<<< HEAD
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/UseLexicon/attention-loss_PytorchVersion"
-=======
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/UseLexicon/attention-loss+in-transformer+attn_dev-3_gaussian"
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/attention-loss-v2_bbox-attn_pytorch_method3_gaussian-unlearnable"
 
->>>>>>> 801a65d4518f9921daaae9e14b2dfdeb6af1ab8b

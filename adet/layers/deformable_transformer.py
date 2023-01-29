@@ -26,7 +26,7 @@ class DeformableTransformer(nn.Module):
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4, enc_n_points=4,
-                 num_proposals=300, use_attention=False):
+                 num_proposals=300, use_attention=False, mode='cuda'):
         super().__init__()
 
         self.d_model = d_model
@@ -36,7 +36,8 @@ class DeformableTransformer(nn.Module):
         self.use_attention = use_attention
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points, use_attention)
+                                                          num_feature_levels, nhead, enc_n_points, use_attention,
+                                                          mode=mode)
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
 
         decoder_layer = DeformableCompositeTransformerDecoderLayer(d_model, dim_feedforward,
@@ -112,6 +113,11 @@ class DeformableTransformer(nn.Module):
         return output_memory, output_proposals
 
     def get_valid_ratio(self, mask):
+        """
+        因为每一层的特征涉及到补零的问题，此函数用来计算可用的部分占整个长宽的比例。
+        :param mask(tensor): (bs, hl, wl), 取值为bool，True表示补零的部分
+        :return: valid_ratio(tensor): (bs, 2) 每一行是：w方向的可用比例，h方向的可用比例
+        """
         _, H, W = mask.shape
         valid_H = torch.sum(~mask[:, :, 0], 1)
         valid_W = torch.sum(~mask[:, 0, :], 1)
@@ -121,6 +127,18 @@ class DeformableTransformer(nn.Module):
         return valid_ratio
 
     def forward(self, srcs, masks, pos_embeds, query_embed, text_embed, text_pos_embed, text_mask=None, pred_attentions=None):
+        """
+
+        :param srcs:
+        :param masks:
+        :param pos_embeds:  ctrl_point_embed
+        :param query_embed:
+        :param text_embed:
+        :param text_pos_embed:
+        :param text_mask:
+        :param pred_attentions:
+        :return:
+        """
         # prepare input for encoder
         src_flatten = []
         mask_flatten = []
@@ -151,7 +169,7 @@ class DeformableTransformer(nn.Module):
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
         level_start_index = torch.cat(
             (spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))  # 从哪里开始是哪个level，可以用于复原
-        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
+        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)     # (bs, num_levels, 2)
 
         # encoder
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten,
@@ -190,11 +208,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4, use_attention=False):
+                 n_levels=4, n_heads=8, n_points=4, use_attention=False, mode='cuda'):
         super().__init__()
 
         # self attention
-        self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points, mode)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
@@ -208,15 +226,6 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
         # whether to use global attention
         self.use_attention = use_attention
-        if self.use_attention:
-            # self.attn_map = nn.Sequential(
-            #     nn.Linear(1, 4), nn.Tanh(),
-            #     nn.Linear(4, 1),
-            #     nn.Sigmoid())
-            self.attn_map = nn.Sequential(
-                nn.Sigmoid(),
-                nn.Linear(1, 1)
-                )
 
     @staticmethod
     def with_pos_embed(tensor, pos):
@@ -239,10 +248,9 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src_value = src
         if self.use_attention:
             assert pred_attentions is not None
-            src_value = src * self.attn_map(pred_attentions)
-            print('gt_attentions are uesd!')
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src_value, spatial_shapes, level_start_index,
-                              padding_mask)
+            # src_value = src * self.attn_map(pred_attentions)
+        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index,
+                              padding_mask, pred_attentions)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
@@ -260,16 +268,38 @@ class DeformableTransformerEncoder(nn.Module):
 
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
+        """
+
+        :param spatial_shapes (list[tensor]): 每一个元素是Hl, Wl, 包含各层的长宽信息。总长度为层次个数
+        :param valid_ratios (tensor): (bs, num_levels, 2) w方向的可用比例，h方向的可用比例
+        :param device:
+        :return:reference_points (list[]):
+        """
         reference_points_list = []
         for lvl, (H_, W_) in enumerate(spatial_shapes):
             ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
                                           torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
+            # torcch.linspace(0.5, 5-0.5, 5): tensor([0.5, 1.5, 2.5, 3.5, 4.5])
+            # H_, W_ = 5, 3
+            # >> > ref_y
+            # tensor([[0.5000, 0.5000, 0.5000],
+            #         [1.5000, 1.5000, 1.5000],
+            #         [2.5000, 2.5000, 2.5000],
+            #         [3.5000, 3.5000, 3.5000],
+            #         [4.5000, 4.5000, 4.5000]])
+            # >> > ref_x
+            # tensor([[0.5000, 1.5000, 2.5000],
+            #         [0.5000, 1.5000, 2.5000],
+            #         [0.5000, 1.5000, 2.5000],
+            #         [0.5000, 1.5000, 2.5000],
+            #         [0.5000, 1.5000, 2.5000]])
+
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
             ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
-            ref = torch.stack((ref_x, ref_y), -1)
+            ref = torch.stack((ref_x, ref_y), -1)     # W方向坐标，H方向坐标     (bs, H_*W_, 2)
             reference_points_list.append(ref)
-        reference_points = torch.cat(reference_points_list, 1)
-        reference_points = reference_points[:, :, None] * valid_ratios[:, None]
+        reference_points = torch.cat(reference_points_list, 1)          # (bs, H1W1+H2W2+..., 2)
+        reference_points = reference_points[:, :, None] * valid_ratios[:, None]  # (bs, H1W1+H2W2+..., n_lvl, 2)
         return reference_points
 
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None, pred_attentions=None):
@@ -388,12 +418,12 @@ class DeformableTransformerDecoder(nn.Module):
 class DeformableCompositeTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4):
+                 n_levels=4, n_heads=8, n_points=4, mode='cuda'):
         super().__init__()
 
         ## attn for location branch
         # cross attention
-        self.attn_cross = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.attn_cross = MSDeformAttn(d_model, n_levels, n_heads, n_points, mode)
         self.dropout_cross = nn.Dropout(dropout)
         self.norm_cross = nn.LayerNorm(d_model)
 
@@ -428,7 +458,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         self.norm_inter_text = nn.LayerNorm(d_model)
 
         # cross attention for text
-        self.attn_cross_text = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.attn_cross_text = MSDeformAttn(d_model, n_levels, n_heads, n_points, mode)
         self.dropout_cross_text = nn.Dropout(dropout)
         self.norm_cross_text = nn.LayerNorm(d_model)
 

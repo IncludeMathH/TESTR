@@ -1,11 +1,10 @@
-_BASE_: "Base-ICDAR15-Polygon.yaml"
+_BASE_: "Base-CTW1500-Polygon.yaml"
 MODEL:
   WEIGHTS: "weights/TESTR/pretrain_testr_R_50_polygon.pth"
   RESNETS:
     DEPTH: 50
   TRANSFORMER:
     NUM_FEATURE_LEVELS: 4
-    INFERENCE_TH_TEST: 0.3
     ENC_LAYERS: 6
     DEC_LAYERS: 6
     DIM_FEEDFORWARD: 1024
@@ -15,18 +14,17 @@ MODEL:
     NUM_QUERIES: 100
     ENC_N_POINTS: 4
     DEC_N_POINTS: 4
-  ATTENTION:
-    ENABLED: True
-    IN_TRANSFORMER: False
-    USE_GAUSSIAN: False
 SOLVER:
-  IMS_PER_BATCH: 5   # 8
-  BASE_LR: 0.625e-5   # 1e-5
-  LR_BACKBONE: 0.625e-6   # 1e-6
+  STEPS: (600000,)   # (300000,)
+  IMS_PER_BATCH: 4   # 8
+  BASE_LR: 5e-6      # 1e-5
+  LR_BACKBONE: 5e-7  # 1e-6
   WARMUP_ITERS: 0
-  STEPS: (200000,)
-  MAX_ITER: 40000    # 20000
+  MAX_ITER: 400000   # 200000
   CHECKPOINT_PERIOD: 1000
 TEST:
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/icdar15/TESTR_Res50_Polygon-UseLoss"
+DATASETS:
+  TRAIN: ("ctw1500_word_poly_mask_train",)
+  TEST: ("ctw1500_word_poly_test",)
+OUTPUT_DIR: "output/TESTR/ctw1500/TESTR_R_50_Polygon"
