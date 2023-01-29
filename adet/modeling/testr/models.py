@@ -73,7 +73,7 @@ class TESTR(nn.Module):
             num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points,
             enc_n_points=self.enc_n_points, num_proposals=self.num_proposals, use_attention=use_attention_in_transformer,
             mode=mode,
-        )
+        )            # 暂时不考虑层间采样！！
         self.ctrl_point_class = nn.Linear(self.d_model, self.num_classes)
         self.ctrl_point_coord = MLP(self.d_model, self.d_model, 2, 3)
         self.bbox_coord = MLP(self.d_model, self.d_model, 4, 3)
