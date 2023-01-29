@@ -171,6 +171,7 @@ class DeformableTransformer(nn.Module):
         level_start_index = torch.cat(
             (spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))  # 从哪里开始是哪个level，可以用于复原
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)     # (bs, num_levels, 2)
+        print('valid_ratios = ', valid_ratios)
 
         # encoder
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten,
