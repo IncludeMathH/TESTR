@@ -18,7 +18,7 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 from torch.nn.modules.container import T
 
 from adet.utils.misc import inverse_sigmoid
-from .ms_deform_attn import MSDeformAttn
+from .ms_deform_attn import MSDeformAttn, MSDeformAttn_v2
 
 
 class DeformableTransformer(nn.Module):
@@ -55,6 +55,8 @@ class DeformableTransformer(nn.Module):
         self.pos_trans_norm = nn.LayerNorm(d_model)
 
         self._reset_parameters()
+        self.parse_mask = nn.Conv2d(1, self.nhead, (3, 3), padding=1, padding_mode='reflect') # TODO: ReLU
+        self.enc_n_points = enc_n_points
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -129,12 +131,13 @@ class DeformableTransformer(nn.Module):
     def forward(self, srcs, masks, pos_embeds, query_embed, text_embed, text_pos_embed, text_mask=None, pred_attentions=None):
         """
 
-        :param srcs:
-        :param masks:
-        :param pos_embeds:  ctrl_point_embed
-        :param query_embed:
-        :param text_embed:
-        :param text_pos_embed:
+        :param srcs List(Tensor): Tensor: (b, c, hl, wl)
+        :param masks List(Tensor): 同样从backbone得到，标记哪些位置是补零的结果而哪些不是
+        :param pos_embeds List(Tensor): 从backbone得到，属于黑盒子
+        :param query_embed:(Tensor)  ctrl_point_embed  (self.num_proposals, self.num_ctrl_points, self.d_model)
+                    nn.Embedding(self.num_ctrl_points, self.d_model).weight[None, ...].repeat(self.num_proposals, 1, 1)
+        :param text_embed:(Tensor) similar to query_ebed (self.num_proposals, self.max_text_len, self.d_model)
+        :param text_pos_embed:(Tensor) 对text_embed进行位置编码 (self.num_proposals, self.max_text_len, self.d_model)
         :param text_mask:
         :param pred_attentions:
         :return:
@@ -144,7 +147,10 @@ class DeformableTransformer(nn.Module):
         mask_flatten = []
         lvl_pos_embed_flatten = []
         spatial_shapes = []
-        for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):
+
+        pred_attentions_flatten = []
+        indexes = []
+        for lvl, (src, mask, pos_embed, pred_attention) in enumerate(zip(srcs, masks, pos_embeds, pred_attentions)):
             bs, c, h, w = src.shape  # src 是特征图
             spatial_shape = (h, w)  # 记录特征图的
             spatial_shapes.append(spatial_shape)
@@ -155,25 +161,28 @@ class DeformableTransformer(nn.Module):
             lvl_pos_embed_flatten.append(lvl_pos_embed)
             src_flatten.append(src)
             mask_flatten.append(mask)
-        src_flatten = torch.cat(src_flatten, 1)  # bs, h1w1+h2w2+h3w3, c
-        mask_flatten = torch.cat(mask_flatten, 1)
+            # ==============prepare index gathered from global mask ================
+            pred_attention = self.parse_mask(pred_attention)         # bs, n_head, h, w
+            mask_folded = F.unfold(pred_attention, 3, padding=1).reshape(bs, self.nhead, 9, h * w).flatten(0, 1)
+            # bs, 9*n_head, 35
+            _, index = mask_folded.topk(self.enc_n_points, dim=1)  # bs*n_head, 4, h*w
+            indexes.append(index.unsqueeze(1).repeat(1, self.d_model//self.nhead, 1, 1))
+            # ==================use global attention and sampled ===============================
+            pred_attention_folded = F.unfold(pred_attention.flatten(0, 1).unsqueeze(1), 3, padding=1)
+            # bs, n_head, h, w -> bs*n_head, 1, h, w -> bs*n_head, 9, h*w
+            sampled_pred = pred_attention_folded.gather(1, index)  # bs*n_head, 4, h*w
+            pred_attentions_flatten.append(sampled_pred)  # # bs*n_head, 4, h*w
+        src_flatten = torch.cat(src_flatten, 1)  # bs, h1w1+h2w2+h3w3+h4w4, c
+        mask_flatten = torch.cat(mask_flatten, 1)  # bs, h1w1+h2w2+h3w3+h4w4
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
-        # use global attention
-        pred_attentions_flatten = None
-        if self.use_attention:
-            pred_attentions_flatten = []
-            for i, pred_attention in enumerate(pred_attentions):
-                pred_attention = pred_attention.flatten(2).transpose(1, 2)  # bs, 1, h, w -> bs, h*w,  1
-                pred_attentions_flatten.append(pred_attention)
-            pred_attentions_flatten = torch.cat(pred_attentions_flatten, 1)  # bs, h1w1+h2w2+h3w3, 1
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
         level_start_index = torch.cat(
             (spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))  # 从哪里开始是哪个level，可以用于复原
-        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)     # (bs, num_levels, 2)
+        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)     # (bs, num_levels, 2) 当b=1时，都是1，无用
 
         # encoder
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten,
-                              mask_flatten, pred_attentions_flatten)
+                              mask_flatten, pred_attentions_flatten, indexes)
 
         # prepare input for decoder
         bs, _, c = memory.shape
@@ -212,7 +221,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
         super().__init__()
 
         # self attention
-        self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points, mode)
+        self.self_attn = MSDeformAttn_v2(d_model, n_heads, n_points, mode)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
@@ -237,7 +246,18 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src = self.norm2(src)
         return src
 
-    def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None, pred_attentions=None):
+    def forward(self, src, pos, spatial_shapes, level_start_index, padding_mask=None, pred_attentions=None, indexes=None):
+        """
+
+        :param src: (bs, h1w1+h2w2+h3w3,c)
+        :param pos: (bs, h1w1+h2w2+h3w3,c)  位置编码
+        :param reference_points: 只是[-1, 1)范围内的格子罢了
+        :param spatial_shapes:
+        :param level_start_index:
+        :param padding_mask:
+        :param pred_attentions:
+        :return:
+        """
         # self attention
         # ========loss+线性层作用于Q=========
         # if self.use_attention:
@@ -249,8 +269,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
         if self.use_attention:
             assert pred_attentions is not None
             # src_value = src * self.attn_map(pred_attentions)
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index,
-                              padding_mask, pred_attentions)
+        src2 = self.self_attn(self.with_pos_embed(src, pos), src_value, spatial_shapes, level_start_index,
+                              padding_mask, pred_attentions, indexes)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
@@ -266,47 +286,22 @@ class DeformableTransformerEncoder(nn.Module):
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
 
-    @staticmethod
-    def get_reference_points(spatial_shapes, valid_ratios, device):
+    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None,
+                pred_attentions=None, indexes=None):
         """
 
-        :param spatial_shapes (list[tensor]): 每一个元素是Hl, Wl, 包含各层的长宽信息。总长度为层次个数
-        :param valid_ratios (tensor): (bs, num_levels, 2) w方向的可用比例，h方向的可用比例
-        :param device:
-        :return:reference_points (list[]):
+        :param src: (bs, h1w1+h2w2+h3w3, c)
+        :param spatial_shapes:
+        :param level_start_index:
+        :param valid_ratios:
+        :param pos: 位置编码+层次编码 (bs, h1w1+h2w2+h3w3, c)
+        :param padding_mask: 推测是哪些位置是补零得到的 (bs, h1w1+h2w2+h3w3)
+        :param pred_attentions:
+        :return:
         """
-        reference_points_list = []
-        for lvl, (H_, W_) in enumerate(spatial_shapes):
-            ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
-                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
-            # torcch.linspace(0.5, 5-0.5, 5): tensor([0.5, 1.5, 2.5, 3.5, 4.5])
-            # H_, W_ = 5, 3
-            # >> > ref_y
-            # tensor([[0.5000, 0.5000, 0.5000],
-            #         [1.5000, 1.5000, 1.5000],
-            #         [2.5000, 2.5000, 2.5000],
-            #         [3.5000, 3.5000, 3.5000],
-            #         [4.5000, 4.5000, 4.5000]])
-            # >> > ref_x
-            # tensor([[0.5000, 1.5000, 2.5000],
-            #         [0.5000, 1.5000, 2.5000],
-            #         [0.5000, 1.5000, 2.5000],
-            #         [0.5000, 1.5000, 2.5000],
-            #         [0.5000, 1.5000, 2.5000]])
-
-            ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
-            ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
-            ref = torch.stack((ref_x, ref_y), -1)     # W方向坐标，H方向坐标     (bs, H_*W_, 2)
-            reference_points_list.append(ref)
-        reference_points = torch.cat(reference_points_list, 1)          # (bs, H1W1+H2W2+..., 2)
-        reference_points = reference_points[:, :, None] * valid_ratios[:, None]  # (bs, H1W1+H2W2+..., n_lvl, 2)
-        return reference_points
-
-    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None, pred_attentions=None):
         output = src
-        reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
         for _, layer in enumerate(self.layers):
-            output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask, pred_attentions)
+            output = layer(output, pos, spatial_shapes, level_start_index, padding_mask, pred_attentions, indexes)
 
         return output
 
