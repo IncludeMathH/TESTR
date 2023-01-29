@@ -165,7 +165,8 @@ class TESTR(nn.Module):
         """
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        features, pos = self.backbone(samples)        # len(features)=3
+        # print(f'features has {len(features)} levels!')
 
         if self.num_feature_levels == 1:
             features = [features[-1]]
@@ -174,7 +175,8 @@ class TESTR(nn.Module):
         srcs = []
         masks = []
         for l, feat in enumerate(features):
-            src, mask = feat.decompose()
+            src, mask = feat.decompose()     # src and mask have the same shape. (bs, 512, h1, w1), (bs, h1, w1), ...
+            # print(f'the shape of src:{src.shape}, the shape of mask:{mask.shape}, the shape of pos[l]:{pos[l].shape}')
             srcs.append(self.input_proj[l](src))
             masks.append(mask)
             assert mask is not None
@@ -187,8 +189,9 @@ class TESTR(nn.Module):
                     src = self.input_proj[l](srcs[-1])
                 m = masks[0]
                 mask = F.interpolate(
-                    m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                    m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]   # bs, h4, w4
                 pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                # print(f'pos_l = {pos_l.shape}')
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
