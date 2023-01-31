@@ -103,9 +103,7 @@ def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations,
         pred_to_attn_weights = torch.stack(sampling_pred_list, dim=-2)  # (bs*n_heads, 1, Nq, n_levels, n_points)
         attention_weights = attention_weights + pred_to_attn_weights
     attention_weights = attention_weights.flatten(-2)
-    attention_weights = F.softmax(attention_weights, -1).view(N_, M_, 1, Lq_, L_, P_)
-    # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)
-    attention_weights = attention_weights.reshape(N_ * M_, 1, Lq_, L_ * P_)
+    attention_weights = F.softmax(attention_weights, -1)   # (N_ * M_, 1, Lq_, L_ * P_)
     output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_ * D_,
                                                                                                      Lq_)
     return output.transpose(1, 2).contiguous()
