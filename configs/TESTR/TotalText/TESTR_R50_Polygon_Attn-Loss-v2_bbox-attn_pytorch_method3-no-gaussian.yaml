@@ -31,5 +31,5 @@ TEST:
   USE_LEXICON: False
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/attention-loss-v2_bbox-attn_pytorch_method3_gaussian-unlearnable"
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/attention-loss-v2_bbox-attn_pytorch_method3_gaussian-no-gaussian"
 
