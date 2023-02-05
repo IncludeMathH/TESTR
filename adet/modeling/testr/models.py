@@ -143,9 +143,12 @@ class TESTR(nn.Module):
             use_gaussian = cfg.MODEL.ATTENTION.USE_GAUSSIAN
         if use_gaussian:
             self.conv2d_gaussian = nn.Conv2d(1, 1, (3, 3), padding=1, padding_mode='reflect')
-            w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
-                                           [0.6065, 1., 0.6065],
-                                           [0.3679, 0.6065, 0.3679]]]])
+            # w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
+            #                                [0.6065, 1., 0.6065],
+            #                                [0.3679, 0.6065, 0.3679]]]])
+            w = 1/9.0 * torch.Tensor([[[[1., 1., 1.],
+                                       [1., 1., 1.],
+                                       [1., 1., 1.]]]])
             self.conv2d_gaussian.weight = nn.Parameter(w, requires_grad=False)
         self.use_gaussian = use_gaussian
 
