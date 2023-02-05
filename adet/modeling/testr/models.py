@@ -56,7 +56,7 @@ class TESTR(nn.Module):
         self.num_classes = 1
         self.max_text_len = cfg.MODEL.TRANSFORMER.NUM_CHARS
         self.voc_size = cfg.MODEL.TRANSFORMER.VOC_SIZE
-        self.sigmoid_offset = not cfg.MODEL.TRANSFORMER.USE_POLYGON
+        self.sigmoid_offset = not cfg.MODEL.TRANSFORMER.USE_POLYGON    # 默认USE_POLYGON=true, 故此值为False
 
         self.text_pos_embed = PositionalEncoding1D(self.d_model, normalize=True, scale=self.pos_embed_scale)
         # fmt: on
@@ -216,6 +216,19 @@ class TESTR(nn.Module):
         hs, hs_text, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
             srcs, masks, pos, ctrl_point_embed, text_embed, text_pos_embed, text_mask=None,
             pred_attentions=pred_attentions_gaussian if self.use_gaussian else pred_attentions)
+        # hs: Tensor, the query output of ctrl_point_embed (n_layer, bs, n_proposals, n_ctrl_points, c)
+        # hs_text: Tensor the query output of text_embed (n_layer, bs, n_proposals, max_len, c)
+        # init_reference: the coarse prediction of encoder, has the shape of (bs, n_proposal, 4)
+        # inter_references: List(Tensor), 似乎每个元素都是init_reference (n_layer, bs, n_proposal, 4)
+        # enc_outputs_class: the output of encoder pass through o linear layer (bs, h1w1+..., 1)
+        # enc_outputs_coord_unact: (bs, h1w1+h2w2+h3w3+h4w4, 4)
+        # 测试
+        # a = init_reference - inter_references[0]
+        # print(f' the unique value of init and inter:{a.unique()}')
+        """
+        the unique value of init and inter:tensor([0.], device='cuda:0')
+        """
+        # print(f'the shape of hs_text: {hs_text.shape}')
 
         outputs_classes = []
         outputs_coords = []
@@ -225,16 +238,17 @@ class TESTR(nn.Module):
                 reference = init_reference
             else:
                 reference = inter_references[lvl - 1]
-            reference = inverse_sigmoid_offset(reference, offset=self.sigmoid_offset)
-            outputs_class = self.ctrl_point_class[lvl](hs[lvl])
-            tmp = self.ctrl_point_coord[lvl](hs[lvl])
+            reference = inverse_sigmoid_offset(reference, offset=self.sigmoid_offset)    # 反sigmoid. torch.log(x/(1-x))
+            outputs_class = self.ctrl_point_class[lvl](hs[lvl])     # 每个self.ctrl_point_class都是线性层
+            tmp = self.ctrl_point_coord[lvl](hs[lvl])  # 每个coord都是MLP -> (bs, n_proposals, n_ctrl_points, 2)
             if reference.shape[-1] == 2:
                 tmp += reference[:, :, None, :]
             else:
                 assert reference.shape[-1] == 4
                 tmp += reference[:, :, None, :2]
             outputs_texts.append(self.text_class(hs_text[lvl]))
-            outputs_coord = sigmoid_offset(tmp, offset=self.sigmoid_offset)
+            outputs_coord = sigmoid_offset(tmp, offset=self.sigmoid_offset) # modified sigmoid for range [-0.5, 1.5]
+            # 此处为：x.sigmoid()
             outputs_classes.append(outputs_class)
             outputs_coords.append(outputs_coord)
         outputs_class = torch.stack(outputs_classes)

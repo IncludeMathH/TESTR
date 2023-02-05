@@ -120,7 +120,7 @@ class SetCriterion(nn.Module):
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
         assert 'pred_logits' in outputs
-        src_logits = outputs['pred_logits']
+        src_logits = outputs['pred_logits']    # (bs, n_proposals, n_ctrl_points, 1) or (bs, n_points?, 1)
 
         idx = self._get_src_permutation_idx(indices)
 
@@ -138,6 +138,8 @@ class SetCriterion(nn.Module):
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
         target_classes_onehot.scatter_(-1, target_classes.unsqueeze(-1), 1)
         target_classes_onehot = target_classes_onehot[..., :-1]
+        print(f'the shape of src_logits:{src_logits.shape}, the shape of target_classes_onehot:{target_classes_onehot.shape}')
+        print(f'target_classes_onehot.unique():{target_classes_onehot.unique()}')
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_inst,
                                      alpha=self.focal_alpha, gamma=self.focal_gamma) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
