@@ -9,6 +9,18 @@ from adet.layers.pos_encoding import PositionalEncoding1D
 from adet.utils.misc import NestedTensor, inverse_sigmoid_offset, nested_tensor_from_tensor_list, sigmoid_offset
 
 
+# 高斯核生成函数
+def creat_gauss_kernel(kernel_size=3, sigma=1):
+    k = kernel_size // 2  # 向左向下的长度；高斯核必是对称的
+    if sigma == 0:
+        sigma = ((kernel_size - 1) * 0.5 - 1) * 0.3 + 0.8
+    X = torch.linspace(-k, k, kernel_size, dtype=torch.float32, device=sigma.device)  # [-1., 0., 1.]
+    Y = torch.linspace(-k, k, kernel_size, dtype=torch.float32, device=sigma.device)
+    x, y = torch.meshgrid(X, Y, indexing='xy')
+    gauss = torch.exp(- (x ** 2 + y ** 2) / (2 * sigma ** 2))
+    return gauss
+
+
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
@@ -71,7 +83,8 @@ class TESTR(nn.Module):
             num_decoder_layers=self.num_decoder_layers, dim_feedforward=self.dim_feedforward,
             dropout=self.dropout, activation=self.activation, return_intermediate_dec=self.return_intermediate_dec,
             num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points,
-            enc_n_points=self.enc_n_points, num_proposals=self.num_proposals, use_attention=use_attention_in_transformer,
+            enc_n_points=self.enc_n_points, num_proposals=self.num_proposals,
+            use_attention=use_attention_in_transformer,
             mode=mode,
         )
         self.ctrl_point_class = nn.Linear(self.d_model, self.num_classes)
@@ -142,14 +155,15 @@ class TESTR(nn.Module):
         if self.use_attention:
             use_gaussian = cfg.MODEL.ATTENTION.USE_GAUSSIAN
         if use_gaussian:
-            self.conv2d_gaussian = nn.Conv2d(1, 1, (3, 3), padding=1, padding_mode='reflect')
+            self.sigma = nn.Parameter(torch.tensor(1.))
+            # self.conv2d_gaussian = nn.Conv2d(1, 1, (3, 3), padding=1, padding_mode='reflect')
             # w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
             #                                [0.6065, 1., 0.6065],
             #                                [0.3679, 0.6065, 0.3679]]]])
-            w = 1/9.0 * torch.Tensor([[[[1., 1., 1.],
-                                       [1., 1., 1.],
-                                       [1., 1., 1.]]]])
-            self.conv2d_gaussian.weight = nn.Parameter(w, requires_grad=False)
+            # w = 1/9.0 * torch.Tensor([[[[1., 1., 1.],
+            #                            [1., 1., 1.],
+            #                            [1., 1., 1.]]]])
+            # self.conv2d_gaussian.weight = nn.Parameter(w, requires_grad=False)
         self.use_gaussian = use_gaussian
 
     def forward(self, samples: NestedTensor):
@@ -168,7 +182,7 @@ class TESTR(nn.Module):
         """
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)        # len(features)=3
+        features, pos = self.backbone(samples)  # len(features)=3
         # print(f'features has {len(features)} levels!')
 
         if self.num_feature_levels == 1:
@@ -178,7 +192,7 @@ class TESTR(nn.Module):
         srcs = []
         masks = []
         for l, feat in enumerate(features):
-            src, mask = feat.decompose()     # src and mask have the same shape. (bs, 512, h1, w1), (bs, h1, w1), ...
+            src, mask = feat.decompose()  # src and mask have the same shape. (bs, 512, h1, w1), (bs, h1, w1), ...
             # print(f'the shape of src:{src.shape}, the shape of mask:{mask.shape}, the shape of pos[l]:{pos[l].shape}')
             srcs.append(self.input_proj[l](src))
             masks.append(mask)
@@ -192,7 +206,7 @@ class TESTR(nn.Module):
                     src = self.input_proj[l](srcs[-1])
                 m = masks[0]
                 mask = F.interpolate(
-                    m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]   # bs, h4, w4
+                    m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]  # bs, h4, w4
                 pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
                 # print(f'pos_l = {pos_l.shape}')
                 srcs.append(src)
@@ -209,11 +223,15 @@ class TESTR(nn.Module):
             pred_attentions = []
             if self.use_gaussian:
                 pred_attentions_gaussian = []
-            for src in srcs:            # src is supposed to be (bs, c_l, H_l, W_l)
-                pred_attention = self.pred_attention(src)
+            for src in srcs:  # src is supposed to be (bs, c, H_l, W_l)
+                pred_attention = self.pred_attention(src)        # (bs, 1, hl, wl)
                 pred_attentions.append(pred_attention)
                 if self.use_gaussian:
-                    pred_attentions_gaussian.append(self.conv2d_gaussian(pred_attention))
+                    bs, c, h, w = pred_attention.shape
+                    x_folded = F.unfold(pred_attention, 3, padding=1).reshape(bs, c, 9, h * w).permute(0, 1, 3, 2)
+                    kernel = creat_gauss_kernel(kernel_size=3, sigma=self.sigma)
+                    x = torch.sum(x_folded * (kernel/torch.sum(kernel)).reshape(1, 1, 1, -1), -1).reshape(bs, c, h, w)
+                    pred_attentions_gaussian.append(x)
         else:
             pred_attentions = None
         hs, hs_text, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
@@ -266,3 +284,8 @@ class TESTR(nn.Module):
         # as a dict having both a Tensor and a list.
         return [{'pred_logits': a, 'pred_ctrl_points': b, 'pred_texts': c}
                 for a, b, c in zip(outputs_class[:-1], outputs_coord[:-1], outputs_text[:-1])]
+
+
+if __name__ == "__main__":
+    gauss = creat_gauss_kernel()
+    print(f'gauss kernel = {gauss}')
