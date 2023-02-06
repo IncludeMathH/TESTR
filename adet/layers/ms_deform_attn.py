@@ -301,20 +301,15 @@ def ms_deform_attn_core_pytorch_v2(value, value_spatial_shapes, attention_weight
                                 pred_attentions=None, indexes=None):
     """
     value is sampled and attention is calculated
+    :param indexes List(Tensor): 每个元素 bs*n_head, 4, h*w
     :param value: (bs, H1W1+H2W2+..., n_heads, C//n_heads)->
                 value_list (n_levles, bs, H_l*W_l, n_heads, C//n_heads) ->
                 value_l    (bs*n_heads, C//n_heads, H_l, W_l) ->
-                sampling_value_l_  (bs*n_heads, C//n_heads, Nq, n_points) -> torch.stack(dim=-2)
-                (bs*n_heads, C//n_heads, Nq, n_levels, n_points)  ->
-                (bs*n_heads, C//n_heads, Nq, n_levels*n_points)
+                sampling_value_l_  (bs*n_head, c//n_head, 4, H_*W_) -> torch.cat(dim=-2)
+                (bs*n_head, c//n_head, h1w1+h2w2+h3w3+h4w4, 4)  ->
     :param value_spatial_shapes:
     :param attention_weights: (bs, h1w1+h2w2+..., self.n_heads, self.n_points)
-    :param pred_attentions: (bs, H1W1+H2W2+..., 1) ->
-                            [(bs, H1W1, 1), ...] -> (bs, 1, H1, W1), ... -> (bs*n_heads, 1, H1, W1), ...
-                            (bs*n_heads, 1, Nq, n_points), ... -> torch.stack(dim=-2) ->
-                            (bs*n_heads, 1, Nq, n_levels, n_points) ->
-                            (bs*n_heads, 1, Nq, n_levels*n_points)
-                            then add into attention and softmax.
+    :param pred_attentions List(Tensor): every element has the shape of (bs*n_head, 4, hl*wl)
 
     :return:
     """
