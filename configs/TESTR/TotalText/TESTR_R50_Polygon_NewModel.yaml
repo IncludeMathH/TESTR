@@ -17,18 +17,19 @@ MODEL:
   ATTENTION:
     ENABLED: True
     IN_TRANSFORMER: True
-    USE_GAUSSIAN: False
+    USE_GAUSSIAN: True
   mode: 'pytorch'
 SOLVER:
-  IMS_PER_BATCH: 4
-  BASE_LR: 5e-6         # 1e-5
-  LR_BACKBONE: 5e-7     # 1e-6
+  IMS_PER_BATCH: 12     # 8
+  BASE_LR: 1.5e-5         # 1e-5
+  LR_BACKBONE: 1.5e-6     # 1e-6
   WARMUP_ITERS: 0
-  STEPS: (400000,)      # (200000,)
-  MAX_ITER: 80000        # 40000       # 20000
+  GAMMA: 0.8
+  STEPS: (180000, 210000, 240000, 270000)      # (200000,)
+  MAX_ITER: 80000        # 40000       # 20000  -> 有用的话就300000
   CHECKPOINT_PERIOD: 1000
 TEST:
   USE_LEXICON: False
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/new_model"
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/new_model-v2_gaussian-unlearnable_bilinear"

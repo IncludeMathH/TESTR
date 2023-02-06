@@ -2,7 +2,7 @@ import json
 import copy
 import matplotlib.pyplot as plt
 
-dir = '/data1/dn/TESTR/output/TESTR/totaltext/TESTR_Res50/Polygon/UseLexicon/attention-loss+in-transformer+attn_map-v4'
+dir = '/data2/dn/TESTR/output/TESTR/totaltext/TESTR_Res50/Polygon/new_model-v2_gaussian-unlearnable'
 filename = dir + "/metrics.json"
 
 file = open(filename, "rb")
@@ -24,6 +24,9 @@ for t in tmp:
         det_F.append(t['DETECTION_ONLY_RESULTS/hmean'])
         e2e_F.append(t['E2E_RESULTS/hmean'])
 print(f'length of loss:{len(total_losses)}, length of F score:{len(det_F)}')
+print(f'the maximum of det-F = {max(det_F)}, the maximum of e2e-F = {max(e2e_F)}')
+det_F = det_F[:44]
+e2e_F = e2e_F[:44]
 
 fig1 = plt.figure('figure1')
 # plt.plot(list(range(1, len(total_losses)+1)), total_losses, color = 'orange', label = 'total_losses')
@@ -32,7 +35,7 @@ plt.xlabel("number of iters")
 plt.ylabel("loss")
 plt.legend(loc=1)
 plt.show()
-fig1.savefig(dir + '/loss.png')
+fig1.savefig(dir + '/figure-loss.png')
 
 fig2 = plt.figure('figure2')
 plt.plot(list(range(1, len(det_F)+1)), det_F, color = 'orange', label = 'det hmean')
@@ -41,7 +44,7 @@ plt.xlabel("number of iters")
 plt.ylabel("hmean")
 plt.legend()
 plt.show()
-fig2.savefig(dir+'/hmean.png')
+fig2.savefig(dir+'/figure-hmean.png')
 
 fig3 = plt.figure('figure3')
 # plt.plot(list(range(1, len(total_losses)+1)), total_losses, color = 'orange', label = 'total_losses')
@@ -50,4 +53,4 @@ plt.xlabel("number of iters")
 plt.ylabel("learning rate")
 plt.legend()
 plt.show()
-fig3.savefig(dir + '/learning_rate.png')
+fig3.savefig(dir + '/figure-learning_rate.png')

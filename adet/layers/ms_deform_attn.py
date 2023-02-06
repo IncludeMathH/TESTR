@@ -204,14 +204,6 @@ class MSDeformAttn(nn.Module):
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
-<<<<<<< HEAD
-        # output = _MSDeformAttnFunction.apply(
-        #     value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
-        output = ms_deform_attn_core_pytorch(value=value,
-                                             value_spatial_shapes=input_spatial_shapes,
-                                             sampling_locations=sampling_locations,
-                                             attention_weights=attention_weights)
-=======
         if self.mode == 'pytorch':
             attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)
             output = ms_deform_attn_core_pytorch(
@@ -225,7 +217,6 @@ class MSDeformAttn(nn.Module):
                                                  sampling_locations, attention_weights, self.im2col_step)
         else:
             raise ValueError('mode can only be in ["pytorch", "cuda"]')
->>>>>>> 801a65d4518f9921daaae9e14b2dfdeb6af1ab8b
         output = self.output_proj(output)
         return output
 

@@ -55,7 +55,7 @@ class DeformableTransformer(nn.Module):
         self.pos_trans_norm = nn.LayerNorm(d_model)
 
         self._reset_parameters()
-        self.parse_mask = nn.Conv2d(1, self.nhead, (3, 3), padding=1, padding_mode='reflect') # TODO: ReLU
+        self.parse_mask = nn.Conv2d(1, self.nhead, (3, 3), padding=1)     # TODO: ReLU
         self.enc_n_points = enc_n_points
 
     def _reset_parameters(self):
@@ -217,7 +217,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4, use_attention=False, mode='cuda'):
+                 n_levels=4, n_heads=8, n_points=4, use_attention=False, mode='cuda', index=0):
         super().__init__()
 
         # self attention
@@ -235,6 +235,10 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
         # whether to use global attention
         self.use_attention = use_attention
+
+        # 表明该layer是第几层
+        self.index = index
+        self.n_levels = n_levels
 
     @staticmethod
     def with_pos_embed(tensor, pos):
@@ -271,6 +275,24 @@ class DeformableTransformerEncoderLayer(nn.Module):
             # src_value = src * self.attn_map(pred_attentions)
         src2 = self.self_attn(self.with_pos_embed(src, pos), src_value, spatial_shapes, level_start_index,
                               padding_mask, pred_attentions, indexes)
+        # feature fusion
+        src2_list = src2.split([H_ * W_ for H_, W_ in spatial_shapes], dim=1)
+        bs, n_q, c = src.shape
+        src2_tmp = []
+        for lid_, (H_, W_) in enumerate(spatial_shapes):
+            # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
+            src2_list_ = src2_list[lid_].transpose(1, 2).reshape(bs, c, H_, W_)
+            src2_tmp.append(src2_list_)
+        if self.index % 2 == 0:
+            for i in range(self.n_levels-1):        # 0, 1, 2
+                src2_tmp[i+1] = src2_tmp[i+1] + F.interpolate(src2_tmp[i], size=src2_tmp[i+1].shape[-2:], mode='bilinear')
+        else:
+            for i in range(self.n_levels-1, 0, -1):    # 3, 2, 1
+                src2_tmp[i-1] = src2_tmp[i-1] + F.interpolate(src2_tmp[i], size=src2_tmp[i-1].shape[-2:], mode='bilinear')
+        src2_flatten = []
+        for src2_tmp_ in src2_tmp:
+            src2_flatten.append(src2_tmp_.flatten(2).transpose(1, 2))    # bs, h*w, c
+        src2 = torch.cat(src2_flatten, dim=1)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
@@ -285,6 +307,9 @@ class DeformableTransformerEncoder(nn.Module):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
+        # 标明各layer的层数
+        for i in range(self.num_layers):
+            self.layers[i].index = i
 
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None,
                 pred_attentions=None, indexes=None):
