@@ -68,6 +68,11 @@ class DeformableTransformer(nn.Module):
         normal_(self.level_embed)
 
     def get_proposal_pos_embed(self, proposals):
+        """
+
+        :param proposals (Tensor): (bs, 100, 4)
+        :return:
+        """
         num_pos_feats = 64
         temperature = 10000
         scale = 2 * math.pi
@@ -83,35 +88,46 @@ class DeformableTransformer(nn.Module):
         return pos
 
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
+        """
+
+        :param memory (Tensor): (bs, n, c)
+        :param memory_padding_mask (Tensor): （bs, h1w1+h2w2+h3w3+h4w4)
+                                            True for padding elements, False for non-padding elements
+        :param spatial_shapes List(Tensor):
+        :return:
+        """
         N_, S_, C_ = memory.shape
         base_scale = 4.0
         proposals = []
         _cur = 0
         for lvl, (H_, W_) in enumerate(spatial_shapes):
             mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
-            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
-            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
+            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)      # H方向可用的像素数  (bs, )
+            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)      # W方向可用的像素数  (bs, )
 
             grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
                                             torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
-            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)
+            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)   # (H_, W_, 2)  直观意义的坐标矩阵
 
             scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
-            grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
-            wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
-            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
+            grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale      # 复制bs次，然后除以横纵可用像素数; 加了0.5
+            wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)      # (bs, H_, W_, 2)
+            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)  # (bs, H_, W_, 4) -> (bs, H_*W_, 4)
+                                                                  # 4: (x, y, w, h),归一化
             proposals.append(proposal)
             _cur += (H_ * W_)
-        output_proposals = torch.cat(proposals, 1)
+        output_proposals = torch.cat(proposals, 1)   # (bs, h1w1+h2w2+..., 4) <==> (bs, n_q, 4)
         output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
-        output_proposals = torch.log(output_proposals / (1 - output_proposals))
+        # 检验是否都是True
+        output_proposals = torch.log(output_proposals / (1 - output_proposals))      # [反sigmoid]
         output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
         output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
+        # ==============以上都是凭借尺寸和mask信息得出===========
 
         output_memory = memory
         output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
         output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
-        output_memory = self.enc_output_norm(self.enc_output(output_memory))
+        output_memory = self.enc_output_norm(self.enc_output(output_memory))      # nn.Linear(d_model, d_model)
         return output_memory, output_proposals
 
     def get_valid_ratio(self, mask):
@@ -187,27 +203,36 @@ class DeformableTransformer(nn.Module):
         # prepare input for decoder
         bs, _, c = memory.shape
         output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
+        # (bs, n_q, c), (bs, n_q, 4)
 
         # hack implementation for two-stage Deformable DETR
-        enc_outputs_class = self.bbox_class_embed(output_memory)
-        enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
+        enc_outputs_class = self.bbox_class_embed(output_memory)  # nn.Linear(self.d_model, self.num_classes)
+        # num_classes = 1  实际上获得的是概率
+        enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals  # (bs, n_q, 4), 前者反而是主要的
+        # bbox_embed: MLP(self.d_model, self.d_model, 4, 3)  (input_dim, hidden_dim, output_dim, num_layers)
 
         topk = self.num_proposals
         topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
+        # (bs, n_q) 返回索引 -> (bs, 100)
         topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+        # (bs, 100, 4)
         topk_coords_unact = topk_coords_unact.detach()
         reference_points = topk_coords_unact.sigmoid()
         init_reference_out = reference_points
         query_pos = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+        # get_proposal_pos_embed: (bs, 100, 4) -> (bs, 100, 256)
+        # pos_trans (nn.Linear(256, 256)): (bs, 100, 256) -> (bs, 100, 256)
         query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1, -1)
+        # (100, self.num_ctrl_points, 256) -> (bs, 100, self.num_ctrl_points, 256)
         query_pos = query_pos[:, :, None, :].repeat(1, 1, query_embed.shape[2], 1)
         text_embed = text_embed.unsqueeze(0).expand(bs, -1, -1, -1)
+        # (100, self.max_len, 256) -> (bs, 100, self.max_len, 256)
 
         # decoder
         hs, hs_text, inter_references = self.decoder(
             query_embed, text_embed, reference_points, memory, spatial_shapes,
             level_start_index, valid_ratios, query_pos, text_pos_embed, mask_flatten, text_mask
-        )
+        )   # output, output_text, reference_points
 
         inter_references_out = inter_references
         return hs, hs_text, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
@@ -314,13 +339,14 @@ class DeformableTransformerEncoder(nn.Module):
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None,
                 pred_attentions=None, indexes=None):
         """
-
-        :param src: (bs, h1w1+h2w2+h3w3, c)
-        :param spatial_shapes:
+            (src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten,
+                                          mask_flatten, pred_attentions_flatten, indexes)
+        :param src: (bs, h1w1+h2w2+h3w3, c); src_flatten
+        :param spatial_shapes: List(Tensor) every element is (hl, wl).
         :param level_start_index:
         :param valid_ratios:
-        :param pos: 位置编码+层次编码 (bs, h1w1+h2w2+h3w3, c)
-        :param padding_mask: 推测是哪些位置是补零得到的 (bs, h1w1+h2w2+h3w3)
+        :param pos: 位置编码+层次编码 (bs, h1w1+h2w2+h3w3, c); lvl_pos_embed_flatten
+        :param padding_mask: 推测是哪些位置是补零得到的 (bs, h1w1+h2w2+h3w3); mask_flatten
         :param pred_attentions:
         :return:
         """
@@ -508,12 +534,20 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
 
     def forward(self, tgt, query_pos, tgt_text, query_pos_text, reference_points, src, src_spatial_shapes,
                 level_start_index, src_padding_mask=None, text_padding_mask=None):
-        ## input size
-        # tgt:                batch_size, n_objects, n_points, embed_dim
-        # query_pos:          batch_size, n_objects, n_points, embed_dim
-        # text_padding_mask:  batch_size, n_objects, n_words
-        # tgt_text:           batch_size, n_objects, n_words, embed_dim
-        # query_pos_text:     batch_size, n_objects, n_words, embed_dim
+        """
+
+        :param tgt: batch_size, n_q, n_control_points, embed_dim
+        :param query_pos: batch_size, n_q, n_points, embed_dim
+        :param tgt_text: batch_size, n_q, n_words, embed_dim
+        :param query_pos_text: batch_size, n_objects, n_words, embed_dim
+        :param reference_points: (bs, n_q, n_levels, 4)
+        :param src:
+        :param src_spatial_shapes:
+        :param level_start_index:
+        :param src_padding_mask:
+        :param text_padding_mask: batch_size, n_objects, n_words
+        :return:
+        """
 
         # self attention (intra)
         q = k = self.with_pos_embed(tgt, query_pos)
@@ -522,17 +556,17 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
             k.flatten(0, 1).transpose(0, 1),
             tgt.flatten(0, 1).transpose(0, 1),
         )[0].transpose(0, 1).reshape(q.shape)
-        tgt = tgt + self.dropout_intra(tgt2)
+        tgt = tgt + self.dropout_intra(tgt2)   # bs, n_q, n_control_points, c
         tgt = self.norm_intra(tgt)
 
-        q_inter = k_inter = tgt_inter = torch.swapdims(tgt, 1, 2)
+        q_inter = k_inter = tgt_inter = torch.swapdims(tgt, 1, 2)  # bs, n_control_points, n_q, c
         tgt2_inter = self.attn_inter(
             q_inter.flatten(0, 1).transpose(0, 1),
             k_inter.flatten(0, 1).transpose(0, 1),
             tgt_inter.flatten(0, 1).transpose(0, 1),
         )[0].transpose(0, 1).reshape(q_inter.shape)
         tgt_inter = tgt_inter + self.dropout_inter(tgt2_inter)
-        tgt_inter = torch.swapdims(self.norm_inter(tgt_inter), 1, 2)
+        tgt_inter = torch.swapdims(self.norm_inter(tgt_inter), 1, 2) # bs, n_q, n_control_points, c
 
         # cross attention
         reference_points_loc = reference_points[:, :, None, :, :].repeat(1, 1, tgt_inter.shape[2], 1, 1)
@@ -583,6 +617,12 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
 
 class DeformableCompositeTransformerDecoder(nn.Module):
     def __init__(self, decoder_layer, num_layers, return_intermediate=False):
+        """
+
+        :param decoder_layer:
+        :param num_layers:
+        :param return_intermediate: 默认是True
+        """
         super().__init__()
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
@@ -593,7 +633,24 @@ class DeformableCompositeTransformerDecoder(nn.Module):
 
     def forward(self, tgt, tgt_text, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
                 query_pos=None, query_pos_text=None, src_padding_mask=None, text_padding_mask=None):
-        output, output_text = tgt, tgt_text
+        """
+            query_embed, text_embed, reference_points, memory, spatial_shapes,
+            level_start_index, valid_ratios, query_pos, text_pos_embed, mask_flatten, text_mask
+        )
+        :param tgt: query_embed / ctrl_point_embed; (bs, n_proposals, n_ctrl_points, c)
+        :param tgt_text: text_embed; (bs, n_proposals, n_max_len, c)
+        :param reference_points: (bs, n_proposals, 4)  4: x, y, w, h
+        :param src: memory; (bs, n_q, c)
+        :param src_spatial_shapes: List(Tensor)
+        :param src_level_start_index:
+        :param src_valid_ratios: (bs, n_levels, 2)
+        :param query_pos: (bs, n_proposals, n_ctrl_points, c)
+        :param query_pos_text: text_pos_embed; (n_proposals, max_len, c)
+        :param src_padding_mask: (bs, n_q)
+        :param text_padding_mask: None
+        :return:
+        """
+        output, output_text = tgt, tgt_text      # query_embed, text_embed
 
         intermediate = []
         intermediate_text = []
@@ -602,6 +659,7 @@ class DeformableCompositeTransformerDecoder(nn.Module):
             if reference_points.shape[-1] == 4:
                 reference_points_input = reference_points[:, :, None] \
                                          * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
+                # (bs, n_q, n_levels, 4)
             else:
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
