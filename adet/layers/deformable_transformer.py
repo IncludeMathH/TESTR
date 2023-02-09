@@ -536,20 +536,21 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
                 level_start_index, src_padding_mask=None, text_padding_mask=None):
         """
 
-        :param tgt: batch_size, n_q, n_control_points, embed_dim
-        :param query_pos: batch_size, n_q, n_points, embed_dim
-        :param tgt_text: batch_size, n_q, n_words, embed_dim
-        :param query_pos_text: batch_size, n_objects, n_words, embed_dim
-        :param reference_points: (bs, n_q, n_levels, 4)
-        :param src:
-        :param src_spatial_shapes:
+        :param tgt: the embedding of predictor. (bs, n_q, n_ctrl_points, c)
+        :param query_pos: the position embedding for predictor. (bs, n_q, n_ctrl_points, c)
+        :param tgt_text: the embedding of text. (bs, n_q, n_words, c)
+        :param query_pos_text: the position embedding for text. (n_q, n_words, c)
+        :param reference_points: the prediction of encoder, multiplied by the valid ratio. (bs, n_q, n_levels, 4)
+        :param src: (bs, n_q, c)
+        :param src_spatial_shapes: List(Tensor), contains the shape of every level.
         :param level_start_index:
-        :param src_padding_mask:
-        :param text_padding_mask: batch_size, n_objects, n_words
+        :param src_padding_mask: (bs, n_q)
+        :param text_padding_mask: None
         :return:
         """
 
-        # self attention (intra)
+        # ==========关键点decoder=========
+        # self attention (intra)   同一个proposal, 不同关键点之间的attention
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.attn_intra(
             q.flatten(0, 1).transpose(0, 1),
@@ -559,6 +560,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         tgt = tgt + self.dropout_intra(tgt2)   # bs, n_q, n_control_points, c
         tgt = self.norm_intra(tgt)
 
+        # self attention (inter)  同一个关键点，不同proposal之间的attention
         q_inter = k_inter = tgt_inter = torch.swapdims(tgt, 1, 2)  # bs, n_control_points, n_q, c
         tgt2_inter = self.attn_inter(
             q_inter.flatten(0, 1).transpose(0, 1),
@@ -570,6 +572,7 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
 
         # cross attention
         reference_points_loc = reference_points[:, :, None, :, :].repeat(1, 1, tgt_inter.shape[2], 1, 1)
+        # 关键点query的位置编码也是通过repeat第二个维度到n_ctrl_points得到的
         tgt2 = self.attn_cross(self.with_pos_embed(tgt_inter, query_pos).flatten(1, 2),
                                reference_points_loc.flatten(1, 2),
                                src, src_spatial_shapes, level_start_index, src_padding_mask).reshape(tgt_inter.shape)
@@ -649,20 +652,28 @@ class DeformableCompositeTransformerDecoder(nn.Module):
         :param src_padding_mask: (bs, n_q)
         :param text_padding_mask: None
         :return:
+        when return_intermediate is true:
+        output (Tensor): (num_layers, bs, n_proposals, n_ctrl_points, c)
+        output_text (Tensor): (num_layers, bs, n_proposals, n_max_len, c)
+        intermediate_reference_points (Tensor): (num_layers, bs, n_proposals, 4)  4: x, y, w, h
         """
         output, output_text = tgt, tgt_text      # query_embed, text_embed
 
         intermediate = []
         intermediate_text = []
         intermediate_reference_points = []
+
+        # step1: 结合横纵可用像素点比例生成参考点
+        if reference_points.shape[-1] == 4:
+            reference_points_input = reference_points[:, :, None] \
+                                     * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
+            # (bs, n_q, n_levels, 4)
+        else:
+            assert reference_points.shape[-1] == 2
+            reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
+
+        # step2: 通过各decoder层
         for lid, layer in enumerate(self.layers):
-            if reference_points.shape[-1] == 4:
-                reference_points_input = reference_points[:, :, None] \
-                                         * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
-                # (bs, n_q, n_levels, 4)
-            else:
-                assert reference_points.shape[-1] == 2
-                reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
             output, output_text = layer(output, query_pos, output_text, query_pos_text, reference_points_input, src,
                                         src_spatial_shapes, src_level_start_index, src_padding_mask, text_padding_mask)
 
