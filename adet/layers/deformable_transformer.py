@@ -34,10 +34,11 @@ class DeformableTransformer(nn.Module):
         self.num_proposals = num_proposals
 
         self.use_attention = use_attention
+        self.window_size = 3     # 默认取3*3窗口的前4个点。在TESTR中通过.window_size赋值
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, enc_n_points, use_attention,
-                                                          mode=mode)
+                                                          mode=mode, window_size=self.window_size)
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
 
         decoder_layer = DeformableCompositeTransformerDecoderLayer(d_model, dim_feedforward,
@@ -179,12 +180,14 @@ class DeformableTransformer(nn.Module):
             mask_flatten.append(mask)
             # ==============prepare index gathered from global mask ================
             pred_attention = self.parse_mask(pred_attention)         # bs, n_head, h, w
-            mask_folded = F.unfold(pred_attention, 3, padding=1).reshape(bs, self.nhead, 9, h * w).flatten(0, 1)
+            mask_folded = F.unfold(pred_attention,
+                                   self.window_size,
+                                   padding=1).reshape(bs, self.nhead, self.window_size**2, h * w).flatten(0, 1)
             # bs, 9*n_head, 35
             _, index = mask_folded.topk(self.enc_n_points, dim=1)  # bs*n_head, 4, h*w
             indexes.append(index.unsqueeze(1).repeat(1, self.d_model//self.nhead, 1, 1))
             # ==================use global attention and sampled ===============================
-            pred_attention_folded = F.unfold(pred_attention.flatten(0, 1).unsqueeze(1), 3, padding=1)
+            pred_attention_folded = F.unfold(pred_attention.flatten(0, 1).unsqueeze(1), self.window_size, padding=1)
             # bs, n_head, h, w -> bs*n_head, 1, h, w -> bs*n_head, 9, h*w
             sampled_pred = pred_attention_folded.gather(1, index)  # bs*n_head, 4, h*w
             pred_attentions_flatten.append(sampled_pred)  # # bs*n_head, 4, h*w
@@ -242,11 +245,13 @@ class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4, use_attention=False, mode='cuda', index=0):
+                 n_levels=4, n_heads=8, n_points=4,
+                 use_attention=False, mode='cuda',
+                 index=0, window_size=3):
         super().__init__()
 
         # self attention
-        self.self_attn = MSDeformAttn_v2(d_model, n_heads, n_points, mode)
+        self.self_attn = MSDeformAttn_v2(d_model, n_heads, n_points, mode, window_size=window_size)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
@@ -264,6 +269,12 @@ class DeformableTransformerEncoderLayer(nn.Module):
         # 表明该layer是第几层
         self.index = index
         self.n_levels = n_levels
+        self.fusion_convs = nn.ModuleList()
+        for i in range(self.n_levels):
+            self.fusion_convs.append(nn.Conv2d(in_channels=d_model,
+                                               out_channels=d_model,
+                                               padding=1,
+                                               kernel_size=3))
 
     @staticmethod
     def with_pos_embed(tensor, pos):
@@ -310,13 +321,15 @@ class DeformableTransformerEncoderLayer(nn.Module):
             src2_tmp.append(src2_list_)
         if self.index % 2 == 0:
             for i in range(self.n_levels-1):        # 0, 1, 2
-                src2_tmp[i+1] = src2_tmp[i+1] + F.interpolate(src2_tmp[i], size=src2_tmp[i+1].shape[-2:], mode='bilinear')
+                src2_tmp[i+1] = src2_tmp[i+1] + F.interpolate(src2_tmp[i], size=src2_tmp[i+1].shape[-2:],
+                                                              align_corners=True, mode='bilinear')
         else:
             for i in range(self.n_levels-1, 0, -1):    # 3, 2, 1
-                src2_tmp[i-1] = src2_tmp[i-1] + F.interpolate(src2_tmp[i], size=src2_tmp[i-1].shape[-2:], mode='bilinear')
+                src2_tmp[i-1] = src2_tmp[i-1] + F.interpolate(src2_tmp[i], size=src2_tmp[i-1].shape[-2:],
+                                                              align_corners=True, mode='bilinear')
         src2_flatten = []
-        for src2_tmp_ in src2_tmp:
-            src2_flatten.append(src2_tmp_.flatten(2).transpose(1, 2))    # bs, h*w, c
+        for layer_idx, src2_tmp_ in enumerate(src2_tmp):
+            src2_flatten.append(self.fusion_convs[layer_idx](src2_tmp_).flatten(2).transpose(1, 2))    # bs, h*w, c
         src2 = torch.cat(src2_flatten, dim=1)
         src = src + self.dropout1(src2)
         src = self.norm1(src)

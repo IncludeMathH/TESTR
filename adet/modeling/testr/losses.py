@@ -138,8 +138,8 @@ class SetCriterion(nn.Module):
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
         target_classes_onehot.scatter_(-1, target_classes.unsqueeze(-1), 1)
         target_classes_onehot = target_classes_onehot[..., :-1]
-        print(f'the shape of src_logits:{src_logits.shape}, the shape of target_classes_onehot:{target_classes_onehot.shape}')
-        print(f'target_classes_onehot.unique():{target_classes_onehot.unique()}')
+        # print(f'the shape of src_logits:{src_logits.shape}, the shape of target_classes_onehot:{target_classes_onehot.shape}')
+        # print(f'target_classes_onehot.unique():{target_classes_onehot.unique()}')
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_inst,
                                      alpha=self.focal_alpha, gamma=self.focal_gamma) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}

@@ -2,7 +2,7 @@ import json
 import copy
 import matplotlib.pyplot as plt
 
-dir = '/data1/dn/TESTR/output/TESTR/totaltext/TESTR_Res50/Polygon/new-model_after-pretrain_NoGaussian'
+dir = '/data2/dn/TESTR/output/TESTR/pretrain/TESTR_R50_Polygon_6xb2_w7_30000e_FPNConv_NewModel'
 filename = dir + "/metrics.json"
 
 file = open(filename, "rb")
@@ -23,8 +23,8 @@ for t in tmp:
     if 'DETECTION_ONLY_RESULTS/hmean' in t:
         det_F.append(t['DETECTION_ONLY_RESULTS/hmean'])
         e2e_F.append(t['E2E_RESULTS/hmean'])
-print(f'length of loss:{len(total_losses)}, length of F score:{len(det_F)}, the max of det-F: {max(det_F)}, the max \
-      of e2e_F: {max(e2e_F)}')
+print(f'length of loss:{len(total_losses)}, length of F score:{len(det_F)}, the max of det-F: {max(det_F)}, the max '
+      f'of e2e_F: {max(e2e_F)}')
 
 fig1 = plt.figure('figure1')
 # plt.plot(list(range(1, len(total_losses)+1)), total_losses, color = 'orange', label = 'total_losses')

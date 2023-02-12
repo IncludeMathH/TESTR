@@ -222,7 +222,7 @@ class MSDeformAttn(nn.Module):
 
 
 class MSDeformAttn_v2(nn.Module):
-    def __init__(self, d_model=256, n_heads=8, n_points=4, mode='cuda'):
+    def __init__(self, d_model=256, n_heads=8, n_points=4, mode='cuda', window_size=3):
         """
         Multi-Scale Deformable Attention Module
         :param d_model      hidden dimension
@@ -230,6 +230,7 @@ class MSDeformAttn_v2(nn.Module):
         :param n_points     number of sampling points per attention head per feature level
         """
         super().__init__()
+        self.window_size = window_size
         self.mode = mode
         if d_model % n_heads != 0:
             raise ValueError('d_model must be divisible by n_heads, but got {} and {}'.format(d_model, n_heads))
@@ -292,13 +293,13 @@ class MSDeformAttn_v2(nn.Module):
         value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
         attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_points)
         output = ms_deform_attn_core_pytorch_v2(
-            value, input_spatial_shapes, attention_weights, pred_attentions, indexes)
+            value, input_spatial_shapes, attention_weights, pred_attentions, indexes, window_size=self.window_size)
         output = self.output_proj(output)
         return output
 
 
 def ms_deform_attn_core_pytorch_v2(value, value_spatial_shapes, attention_weights,
-                                pred_attentions=None, indexes=None):
+                                pred_attentions=None, indexes=None, window_size=3):
     """
     value is sampled and attention is calculated
     :param indexes List(Tensor): 每个元素 bs*n_head, 4, h*w
@@ -325,8 +326,8 @@ def ms_deform_attn_core_pytorch_v2(value, value_spatial_shapes, attention_weight
         # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
         value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_ * M_, D_, H_, W_)
         # sample value_l_
-        value_unfolded = F.unfold(value_l_, 3, padding=1)  # bs*n_head, 9*c//n_head, H_*W_
-        sampling_value_l_ = value_unfolded.reshape(N_*M_, D_, 9, H_*W_).gather(2, indexes[lid_])
+        value_unfolded = F.unfold(value_l_, window_size, padding=1)  # bs*n_head, 9*c//n_head, H_*W_
+        sampling_value_l_ = value_unfolded.reshape(N_*M_, D_, window_size**2, H_*W_).gather(2, indexes[lid_])
         # bs*n_head, c//n_head, 4, H_*W_
 
         sampling_value_list.append(sampling_value_l_.transpose(2, 3))
