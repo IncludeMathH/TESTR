@@ -1,0 +1,33 @@
+_BASE_: "Base-TotalText-Polygon.yaml"
+MODEL:
+  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
+  RESNETS:
+    DEPTH: 50
+  TRANSFORMER:
+    NUM_FEATURE_LEVELS: 4
+    ENC_LAYERS: 6
+    DEC_LAYERS: 6
+    DIM_FEEDFORWARD: 1024
+    HIDDEN_DIM: 256
+    DROPOUT: 0.1
+    NHEADS: 8
+    NUM_QUERIES: 100
+    ENC_N_POINTS: 4
+    DEC_N_POINTS: 4
+  ATTENTION:
+    ENABLED: True
+    IN_TRANSFORMER: True
+    USE_GAUSSIAN: False
+    window_size: 7
+  mode: 'pytorch'
+SOLVER:
+  IMS_PER_BATCH: 4        # 8
+  BASE_LR: 5e-6           # 1e-5
+  LR_BACKBONE: 5e-7       # 1e-6
+  WARMUP_ITERS: 0
+  STEPS: (200000,)
+  MAX_ITER: 80000         # 20000
+  CHECKPOINT_PERIOD: 1000
+TEST:
+  EVAL_PERIOD: 1000
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_model-v3_4xb1_80000e"

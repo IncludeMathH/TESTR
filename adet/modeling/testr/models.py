@@ -61,9 +61,11 @@ class TESTR(nn.Module):
         self.text_pos_embed = PositionalEncoding1D(self.d_model, normalize=True, scale=self.pos_embed_scale)
         # fmt: on
 
+        # ========通过特征图得到全局Mask的概率=======
         use_attention_in_transformer = False
         if self.use_attention:
-            self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+            self.pred_attention = nn.ModuleList([nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+                                                 for _ in range(self.num_feature_levels)])
             use_attention_in_transformer = cfg.MODEL.ATTENTION.IN_TRANSFORMER
         mode = cfg.MODEL.mode
         self.transformer = DeformableTransformer(
@@ -72,9 +74,8 @@ class TESTR(nn.Module):
             dropout=self.dropout, activation=self.activation, return_intermediate_dec=self.return_intermediate_dec,
             num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points,
             enc_n_points=self.enc_n_points, num_proposals=self.num_proposals, use_attention=use_attention_in_transformer,
-            mode=mode,
+            mode=mode, window_size=cfg.MODEL.ATTENTION.window_size, 
         )            # 暂时不考虑层间采样！！
-        self.window_size = cfg.MODEL.ATTENTION.window_size
         self.ctrl_point_class = nn.Linear(self.d_model, self.num_classes)
         self.ctrl_point_coord = MLP(self.d_model, self.d_model, 2, 3)
         self.bbox_coord = MLP(self.d_model, self.d_model, 4, 3)
@@ -207,8 +208,8 @@ class TESTR(nn.Module):
             pred_attentions = []
             if self.use_gaussian:
                 pred_attentions_gaussian = []
-            for src in srcs:            # src is supposed to be (bs, c_l, H_l, W_l)
-                pred_attention = self.pred_attention(src)
+            for lvl, src in enumerate(srcs):            # src is supposed to be (bs, c_l, H_l, W_l)
+                pred_attention = self.pred_attention[lvl](src)   # (bs, 1, hl, wl)
                 pred_attentions.append(pred_attention)
                 if self.use_gaussian:
                     pred_attentions_gaussian.append(self.conv2d_gaussian(pred_attention))

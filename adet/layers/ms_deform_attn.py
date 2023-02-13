@@ -103,7 +103,7 @@ def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations,
         pred_to_attn_weights = torch.stack(sampling_pred_list, dim=-2)  # (bs*n_heads, 1, Nq, n_levels, n_points)
         attention_weights = attention_weights + pred_to_attn_weights
     attention_weights = attention_weights.flatten(-2)
-    attention_weights = F.softmax(attention_weights, -1)   # (N_ * M_, 1, Lq_, L_ * P_)
+    attention_weights = F.softmax(attention_weights, -1)  # (N_ * M_, 1, Lq_, L_ * P_)
     output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_ * D_,
                                                                                                      Lq_)
     return output.transpose(1, 2).contiguous()
@@ -247,8 +247,10 @@ class MSDeformAttn_v2(nn.Module):
         self.n_heads = n_heads
         self.n_points = n_points
 
-        self.attention_weights = nn.Linear(d_model, n_heads * n_points)
-        self.value_proj = nn.Linear(d_model, d_model)
+        # self.attention_weights = nn.Linear(d_model, n_heads * n_points)
+        self.query_proj = nn.Conv2d(d_model, d_model, 1)
+        self.key_proj = nn.Conv2d(d_model, d_model, 1)
+        self.value_proj = nn.Conv2d(d_model, d_model, 1)
         self.output_proj = nn.Linear(d_model, d_model)
 
         self._reset_parameters()
@@ -257,20 +259,19 @@ class MSDeformAttn_v2(nn.Module):
         thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
         grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
         grid_init = (grid_init / grid_init.abs().max(-1, keepdim=True)[0]).view(self.n_heads, 1, 2).repeat(1,
-                                                                                                          self.n_points,
-                                                                                                          1)
+                                                                                                           self.n_points,
+                                                                                                           1)
         for i in range(self.n_points):
             grid_init[:, i, :] *= i + 1
-        constant_(self.attention_weights.weight.data, 0.)
-        constant_(self.attention_weights.bias.data, 0.)
         xavier_uniform_(self.value_proj.weight.data)
         constant_(self.value_proj.bias.data, 0.)
         xavier_uniform_(self.output_proj.weight.data)
         constant_(self.output_proj.bias.data, 0.)
 
-    def forward(self, query, input_flatten, input_spatial_shapes, input_level_start_index,
-                input_padding_mask=None, pred_attentions=None, indexes=None):
+    def forward(self, srcs_pos, srcs_value, spatial_shapes, masks=None, pred_attentions=None):
+
         """
+        :param srcs_pos:
         :param indexes List(Tensor):     4个level，每个元素 bs*n_head, 4, h*w
         :param pred_attentions (tesor):    (N, length_{query}, 1)
         :param query                       (N, Length_{query}, C)
@@ -283,23 +284,92 @@ class MSDeformAttn_v2(nn.Module):
 
         :return output                     (N, Length_{query}, C)
         """
-        N, Len_q, _ = query.shape  # 有位置编码信息 -> query -> attention
-        N, Len_in, _ = input_flatten.shape  # 无位置编码信息 -> value
-        assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
+        bs, c_head = len(srcs_pos[0]), self.d_model // self.n_heads
 
-        value = self.value_proj(input_flatten)    # bs, h1w1+..., c
-        if input_padding_mask is not None:
-            value = value.masked_fill(input_padding_mask[..., None], float(0))
-        value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
-        attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_points)
-        output = ms_deform_attn_core_pytorch_v2(
-            value, input_spatial_shapes, attention_weights, pred_attentions, indexes, window_size=self.window_size)
-        output = self.output_proj(output)
+        # =============1. get query=========
+        query_list = [self.query_proj(src_pos).reshape(bs, self.n_heads, c_head, *spatial_shapes[lvl]).flatten(0, 1)
+                      for lvl, src_pos in enumerate(srcs_pos)]  # bs*n_head, c_head, hl, wl => for unfold(4d)
+        # (bs, n_q, c) -> (bs, n_head, n_q, c_head)
+        query = torch.cat([query_l_.flatten(-2) for query_l_ in query_list], dim=-1)  # bs*n_head, c_head, n_q
+
+        # =============2. get key, value =========
+        key_list = [self.key_proj(src_pos).reshape(bs, self.n_heads, c_head, *spatial_shapes[lvl]).flatten(0, 1)
+                    for lvl, src_pos in enumerate(srcs_pos)]  # bs*n_head, c_head, hl, wl -> for unfold(4d)
+        value_list = [self.value_proj(src_value).reshape(bs, self.n_heads, c_head, *spatial_shapes[lvl]).flatten(0, 1)
+                      for lvl, src_value in enumerate(srcs_value)]  # no pos embedding
+        if masks is not None:
+            # padding zero
+            value_list = [value.masked_fill(masks[j][:, None, :, :], float(0)) for j, value in enumerate(value_list)]
+
+            # =============3. sample key, value and pred_attention by using mask =================
+        key_sampled, value_sampled, pred_attentions_sampled = [], [], []
+        for lvl, key_l_ in enumerate(key_list):
+            # get index by using global mask
+            mask_folded = F.unfold(pred_attentions[lvl],
+                                   self.window_size,
+                                   padding=self.window_size // 2).reshape(bs, self.n_heads, self.window_size ** 2, -1)
+            sampled_pred, index_ = mask_folded.flatten(0, 1).topk(self.n_points, dim=1)  # bs*n_head, 4, hl*wl
+            index = index_.unsqueeze(1).repeat(1, c_head, 1, 1)  # bs*n_head, c_head, 4, hl*wl
+
+            key_tmp = []  # 记录每个lvl的采样列表
+            value_tmp = []
+            pred_tmp = []
+            for j in range(len(key_list)):
+                if j == lvl:
+                    key_j_, value_j_, pred_j_ = key_list[j], value_list[j], pred_attentions[j]
+                else:
+                    H_j, W_j = spatial_shapes[lvl][0], spatial_shapes[lvl][1]
+                    key_j_ = F.interpolate(input=key_list[j],
+                                           size=(H_j, W_j),
+                                           mode='bilinear',
+                                           align_corners=False)  # bs*n_head, c_head, hl, wl
+                    value_j_ = F.interpolate(input=value_list[j],
+                                             size=(H_j, W_j),
+                                             mode='bilinear',
+                                             align_corners=False)  # bs*n_head, c_head, hl, wl
+                    pred_j_ = F.interpolate(input=pred_attentions[j],
+                                            size=(H_j, W_j),
+                                            mode='bilinear',
+                                            align_corners=False)  # bs, n_head, hl, wl
+
+                # =========对key, value进行采样======
+                key_j_folded = F.unfold(key_j_, self.window_size,
+                                        padding=self.window_size // 2)  # bs*n_head, c_head * w**2, hl*wl
+                key_j_sampled = key_j_folded.reshape(bs * self.n_heads, c_head,
+                                                     self.window_size ** 2, -1).gather(2, index)
+                key_tmp.append(key_j_sampled)
+
+                value_j_folded = F.unfold(value_j_, self.window_size,
+                                          padding=self.window_size // 2)  # bs*n_head, c_head * w**2, hl*wl
+                value_j_sampled = value_j_folded.reshape(bs * self.n_heads, c_head,
+                                                         self.window_size ** 2, -1).gather(2, index)
+                value_tmp.append(value_j_sampled)
+
+                pred_j_folded = F.unfold(pred_j_, self.window_size,
+                                         padding=self.window_size // 2)  # bs, n_head * w**2, hl*wl
+                pred_j_sampled = pred_j_folded.reshape(bs * self.n_heads, self.window_size ** 2, -1).gather(1, index_)
+                pred_tmp.append(pred_j_sampled)  # (bs*n_head, 4, hl*wl)
+            key_sampled.append(torch.stack(key_tmp, dim=-3))  # bs*n_head, c_head, [n_levels], n_points, hl*wl
+            value_sampled.append(torch.stack(value_tmp, dim=-3))
+            pred_attentions_sampled.append(torch.stack(pred_tmp, dim=-3))  # (bs*n_head, [n_levels], n_points, hl*wl)
+        key_sampled = torch.cat(key_sampled, dim=-1).flatten(2, 3).permute(0, 3, 2, 1)
+        # bs*n_head, c_head, n_levels, n_points, n_q -> bs*n_head, c_head, n_points*n_levels, n_q
+        # -> bs*n_head, n_q, n_points*n_levels, c_head
+        value_sampled = torch.cat(value_sampled, dim=-1).flatten(2, 3).permute(0, 3, 2, 1)
+        pred_attentions_sampled = torch.cat(pred_attentions_sampled, dim=-1).flatten(1, 2).permute(0, 2, 1)
+
+        # ==========get attention weights==========
+        # query.permute(0, 2, 1).unsqueeze(-2)  bs*n_head, n_q, 1, c_head
+        attn = (query.permute(0, 2, 1).unsqueeze(-2) * key_sampled).sum(-1)
+        attn = F.softmax(attn + pred_attentions_sampled, dim=-1)  # bs*n_head, n_q, n_points*n_levels
+        output = (attn.unsqueeze(-1) * value_sampled).sum(-2).permute(0, 2, 1).reshape(bs, self.d_model, -1)
+        # bs*n_head, n_q, n_points*n_levels, c_head/1 -> bs*c_head, n_q, c_head -> bs*n_head, c_head, n_q
+        output = self.output_proj(output.permute(0, 2, 1))
         return output
 
 
 def ms_deform_attn_core_pytorch_v2(value, value_spatial_shapes, attention_weights,
-                                pred_attentions=None, indexes=None, window_size=3):
+                                   pred_attentions=None, indexes=None, window_size=3):
     """
     value is sampled and attention is calculated
     :param indexes List(Tensor): 每个元素 bs*n_head, 4, h*w
@@ -327,7 +397,7 @@ def ms_deform_attn_core_pytorch_v2(value, value_spatial_shapes, attention_weight
         value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_ * M_, D_, H_, W_)
         # sample value_l_
         value_unfolded = F.unfold(value_l_, window_size, padding=1)  # bs*n_head, 9*c//n_head, H_*W_
-        sampling_value_l_ = value_unfolded.reshape(N_*M_, D_, window_size**2, H_*W_).gather(2, indexes[lid_])
+        sampling_value_l_ = value_unfolded.reshape(N_ * M_, D_, window_size ** 2, H_ * W_).gather(2, indexes[lid_])
         # bs*n_head, c//n_head, 4, H_*W_
 
         sampling_value_list.append(sampling_value_l_.transpose(2, 3))
@@ -342,5 +412,5 @@ def ms_deform_attn_core_pytorch_v2(value, value_spatial_shapes, attention_weight
         attention_weights = attention_weights + pred_to_attn_weights.permute(0, 1, 3, 2)
     attention_weights = F.softmax(attention_weights, -1)  # (N_ * M_, 1, S_, P_)
     output = (torch.cat(sampling_value_list, dim=-2) * attention_weights).sum(-1).view(N_, M_ * D_, S_)
-    # bs*n_head, c//n_head, h1w1+h2w2+..., 4  * bs*n_head, 1, h1w1+h2w2+..., 4
+    # (bs*n_head, c//n_head, h1w1+h2w2+..., 4)  * (bs*n_head, 1, h1w1+h2w2+..., 4)
     return output.transpose(1, 2).contiguous()
