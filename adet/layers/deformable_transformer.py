@@ -43,7 +43,8 @@ class DeformableTransformer(nn.Module):
 
         decoder_layer = DeformableCompositeTransformerDecoderLayer(d_model, dim_feedforward,
                                                                    dropout, activation,
-                                                                   num_feature_levels, nhead, dec_n_points)
+                                                                   num_feature_levels, nhead, dec_n_points,
+                                                                   mode=mode)
         self.decoder = DeformableCompositeTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
@@ -216,9 +217,11 @@ class DeformableTransformer(nn.Module):
         # (100, self.max_len, 256) -> (bs, 100, self.max_len, 256)
 
         # decoder
+        level_start_index = torch.cat(
+            (spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))  # 从哪里开始是哪个level，可以用于复原
         hs, hs_text, inter_references = self.decoder(
             query_embed, text_embed, reference_points, memory, spatial_shapes,
-            level_start_index, valid_ratios, query_pos, text_pos_embed, mask_flatten, text_mask
+            valid_ratios, level_start_index, query_pos, text_pos_embed, mask_flatten, text_mask
         )   # output, output_text, reference_points
 
         inter_references_out = inter_references
@@ -497,9 +500,8 @@ class DeformableCompositeTransformerDecoderLayer(nn.Module):
         return tgt
 
     def forward(self, tgt, query_pos, tgt_text, query_pos_text, reference_points, src, src_spatial_shapes,
-                src_padding_mask=None, text_padding_mask=None):
+                level_start_index, src_padding_mask=None, text_padding_mask=None):
         """
-
         :param tgt: the embedding of predictor. (bs, n_q, n_ctrl_points, c)
         :param query_pos: the position embedding for predictor. (bs, n_q, n_ctrl_points, c)
         :param tgt_text: the embedding of text. (bs, n_q, n_words, c)
@@ -597,12 +599,10 @@ class DeformableCompositeTransformerDecoder(nn.Module):
         self.bbox_embed = None
         self.class_embed = None
 
-    def forward(self, tgt, tgt_text, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
+    def forward(self, tgt, tgt_text, reference_points, src, src_spatial_shapes, src_valid_ratios, level_start_index,
                 query_pos=None, query_pos_text=None, src_padding_mask=None, text_padding_mask=None):
         """
-            query_embed, text_embed, reference_points, memory, spatial_shapes,
-            level_start_index, valid_ratios, query_pos, text_pos_embed, mask_flatten, text_mask
-        )
+
         :param tgt: query_embed / ctrl_point_embed; (bs, n_proposals, n_ctrl_points, c)
         :param tgt_text: text_embed; (bs, n_proposals, n_max_len, c)
         :param reference_points: (bs, n_proposals, 4)  4: x, y, w, h
@@ -638,7 +638,7 @@ class DeformableCompositeTransformerDecoder(nn.Module):
         # step2: 通过各decoder层
         for lid, layer in enumerate(self.layers):
             output, output_text = layer(output, query_pos, output_text, query_pos_text, reference_points_input, src,
-                                        src_spatial_shapes, src_level_start_index, src_padding_mask, text_padding_mask)
+                                        src_spatial_shapes, level_start_index, src_padding_mask, text_padding_mask)
 
             if self.return_intermediate:
                 intermediate.append(output)
