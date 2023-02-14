@@ -75,9 +75,11 @@ class TESTR(nn.Module):
 
         use_attention_in_transformer = False
         if self.use_attention:
-            self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+            self.pred_attention = nn.ModuleList(nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+                                                for _ in range(self.num_feature_levels))
             use_attention_in_transformer = cfg.MODEL.ATTENTION.IN_TRANSFORMER
         mode = cfg.MODEL.mode
+        self.window_size = cfg.MODEL.ATTENTION.window_size
         self.transformer = DeformableTransformer(
             d_model=self.d_model, nhead=self.nhead, num_encoder_layers=self.num_encoder_layers,
             num_decoder_layers=self.num_decoder_layers, dim_feedforward=self.dim_feedforward,
@@ -85,7 +87,7 @@ class TESTR(nn.Module):
             num_feature_levels=self.num_feature_levels, dec_n_points=self.dec_n_points,
             enc_n_points=self.enc_n_points, num_proposals=self.num_proposals,
             use_attention=use_attention_in_transformer,
-            mode=mode,
+            mode=mode, window_size=self.window_size,
         )
         self.ctrl_point_class = nn.Linear(self.d_model, self.num_classes)
         self.ctrl_point_coord = MLP(self.d_model, self.d_model, 2, 3)
@@ -223,15 +225,17 @@ class TESTR(nn.Module):
             pred_attentions = []
             if self.use_gaussian:
                 pred_attentions_gaussian = []
-            for src in srcs:  # src is supposed to be (bs, c, H_l, W_l)
-                pred_attention = self.pred_attention(src)        # (bs, 1, hl, wl)
+            for lvl, src in enumerate(srcs):  # src is supposed to be (bs, c, H_l, W_l)
+                pred_attention = self.pred_attention[lvl](src)        # (bs, 1, hl, wl)
                 pred_attentions.append(pred_attention)
                 if self.use_gaussian:
                     bs, c, h, w = pred_attention.shape
-                    x_folded = F.unfold(pred_attention, 3, padding=1).reshape(bs, c, 9, h * w).permute(0, 1, 3, 2)
-                    kernel = creat_gauss_kernel(kernel_size=3, sigma=self.sigma)
-                    x = torch.sum(x_folded * (kernel/torch.sum(kernel)).reshape(1, 1, 1, -1), -1).reshape(bs, c, h, w)
-                    pred_attentions_gaussian.append(x)
+                    x_folded = F.unfold(pred_attention, self.window_size,
+                                        padding=self.window_size//2).reshape(bs, c,
+                                                                             self.window_size**2, h * w)
+                    kernel = creat_gauss_kernel(kernel_size=self.window_size, sigma=self.sigma)
+                    x = torch.sum(x_folded.permute(0, 1, 3, 2) * (kernel/torch.sum(kernel)).reshape(1, 1, 1, -1), -1)
+                    pred_attentions_gaussian.append(x.reshape(bs, c, h, w))
         else:
             pred_attentions = None
         hs, hs_text, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
