@@ -2,14 +2,17 @@ import json
 import copy
 import matplotlib.pyplot as plt
 
-dir = '/data1/dn/TESTR/output/TESTR/totaltext/TESTR_Res50/Polygon/new_model'
+dir = '/data1/dn/TESTR/output/TESTR/pretrain/TESTR_R50_Polygon_w7_p8_4xb1_80000e'
 filename = dir + "/metrics.json"
 
 file = open(filename, "rb")
 # 读取每一行
 tmp = []
-for line in open(filename, 'r'):
-    tmp.append(json.loads(line))
+# for line in open(filename, 'r'):
+#     tmp.append(json.loads(line))
+for line in file.readlines():
+    dic = json.loads(line)
+    tmp.append(dic)
 
 total_losses = []
 lrs = []
@@ -23,8 +26,8 @@ for t in tmp:
     if 'DETECTION_ONLY_RESULTS/hmean' in t:
         det_F.append(t['DETECTION_ONLY_RESULTS/hmean'])
         e2e_F.append(t['E2E_RESULTS/hmean'])
-print(f'length of loss:{len(total_losses)}, length of F score:{len(det_F)}, the max of det-F: {max(det_F)}, the max \
-      of e2e_F: {max(e2e_F)}')
+print(f'length of loss:{len(total_losses)}, length of F score:{len(det_F)}, the max of det-F: {max(det_F)}, the max'
+      f'of e2e_F: {max(e2e_F)}')
 print(f'det_F after every 10 thousand epoch: {det_F[10::10]}')
 det_F = det_F[:80]
 e2e_F = e2e_F[:80]

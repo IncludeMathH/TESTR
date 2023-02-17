@@ -21,16 +21,17 @@ MODEL:
     windos_size: 7
   mode: 'cuda'
 SOLVER:
+  GAMMA: 0.5
   IMS_PER_BATCH: 4      # 8
   BASE_LR: 5e-6         # 1e-5
   LR_BACKBONE: 5e-7     # 1e-6
   WARMUP_ITERS: 0
-  STEPS: (400000,)      # (200000,)
+  STEPS: (34000, 68000)      # (200000,)
   MAX_ITER: 80000        # 40000       # 20000
   CHECKPOINT_PERIOD: 1000
 TEST:
   USE_LEXICON: False
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_win-based-offsets-7_4xb1_80000e"
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_w7-based-offsets_4xb1_80000e"
 

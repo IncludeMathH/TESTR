@@ -137,7 +137,7 @@ class DeformableTransformer(nn.Module):
         window_grid: (tensor), has the shape of (window_size**2, 2)  2: (x, y) in dim (W, H)
         """
         k = window_size // 2
-        y, x = torch.meshgrid(torch.linspace(k, -k, window_size, dtype=torch.float32, device=device),
+        y, x = torch.meshgrid(torch.linspace(-k, k, window_size, dtype=torch.float32, device=device),
                               torch.linspace(-k, k, window_size, dtype=torch.float32, device=device),
                               indexing='ij')
         window_grid = torch.stack([x.reshape(-1), y.reshape(-1)], dim=-1)
@@ -307,7 +307,6 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src_value = src
         # ======get offsets======
         offsets, pred_sampled = self.get_offsets(pred_attentions, window_grid, window_size=self.window_size)
-
         src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src_value, spatial_shapes,
                               level_start_index, padding_mask, pred_sampled, offsets)
         src = src + self.dropout1(src2)
