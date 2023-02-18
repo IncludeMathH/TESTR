@@ -242,7 +242,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
         self.n_points = n_points
         self.window_size = window_size
         if self.use_attention:
-            self.parse_mask = nn.ModuleList(nn.Conv2d(1, n_heads, 1) for _ in range(n_levels))
+            self.parse_mask = nn.ModuleList(nn.Conv2d(in_channels=1,
+                                                      out_channels=n_heads,
+                                                      kernel_size=window_size,
+                                                      padding=window_size//2)
+                                            for _ in range(n_levels))
 
     @staticmethod
     def with_pos_embed(tensor, pos):
