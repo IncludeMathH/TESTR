@@ -222,8 +222,15 @@ class MSDeformAttn(nn.Module):
                 attention_weights += pred_sampled
             attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads,
                                                                       self.n_levels, self.n_points)
-            output = _MSDeformAttnFunction.apply(value, input_spatial_shapes, input_level_start_index,
-                                                 sampling_locations, attention_weights, self.im2col_step)
+            # ====use amp for cuda extension======
+            from torch.cuda.amp import autocast
+            with autocast(dtype=torch.float16, enabled=False):
+                output = _MSDeformAttnFunction.apply(value.float(), input_spatial_shapes,
+                                                     input_level_start_index, sampling_locations.float(),
+                                                     attention_weights.float(), self.im2col_step)
+            # output = _MSDeformAttnFunction.apply(value, input_spatial_shapes,
+            #                                      input_level_start_index, sampling_locations,
+            #                                      attention_weights, self.im2col_step)
         else:
             raise ValueError('mode can only be in ["pytorch", "cuda"]')
         output = self.output_proj(output)
