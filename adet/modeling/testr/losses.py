@@ -62,7 +62,7 @@ def loss_attentions(outputs, targets, indices, num_inst):
     Returns:
         mask_loss (Tensor): A scalar tensor containing the loss.
     """
-    assert 'pred_attentions' not in outputs
+    assert 'pred_attentions' in outputs
 
     device = outputs['pred_attentions'][0].device
     # 当batch size > 1时，要考虑补零操作

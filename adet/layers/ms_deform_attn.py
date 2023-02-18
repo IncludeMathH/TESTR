@@ -171,6 +171,9 @@ class MSDeformAttn(nn.Module):
     def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_level_start_index,
                 input_padding_mask=None, pred_sampled=None, offsets=None):
         """
+        :param offsets: (Tensor), (bs, n_q, n_heads, n_levels, n_points, 2)。是由(bs, n_q, n_heads, n_points, 2)按各层长宽
+                        比例缩放得到的结果。
+        :param pred_sampled: (Tensor), (bs, n_head, n_points, n_q) 每个query在其所在lvl，对于采样点的mask
         :param pred_attentions (tesor):    (N, length_{query}, 1)
         :param query                       (N, Length_{query}, C)
         :param reference_points            (N, Length_{query}, n_levels, 2), range in [0, 1],
@@ -198,7 +201,7 @@ class MSDeformAttn(nn.Module):
             sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads,
                                                                  self.n_levels, self.n_points, 2)
         else:
-            sampling_offsets = offsets[:, :, :, None]     # (bs, n_q, n_heads, 1, n_points, 2)
+            sampling_offsets = offsets     # (bs, n_q, n_heads, n_levels, n_points, 2)
         if reference_points.shape[-1] == 2:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
             sampling_locations = reference_points[:, :, None, :, None, :] \

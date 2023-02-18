@@ -258,10 +258,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src = self.norm2(src)
         return src
 
-    def get_offsets(self, masks, window_grid, window_size):
+    def get_offsets(self, masks, window_grid, window_size, spatial_ratios):
         """
         得到每个参考点的坐标，从0.5开始。然后除以每层特征图的长宽，得到归一化的坐标数值。注意，此时valid_ratio实际上没有起作用，在各个level
         选取的参考点是一致的。
+        :param spatial_ratios: List(List(Tensor)), denotes the (w_ratio, h_ratio) for every level.
         :param window_grid: (Tensor), (window_size**2, 2)
         :param masks: List(Tensor), every element has the shape of (bs, n_head, hl,wl)
         :return:reference_points (list[]):
@@ -272,6 +273,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
         offsets_list = []
         sampled_mask_list = []
         for lvl, mask in enumerate(masks):
+            spatial_ratio = spatial_ratios[lvl]
             mask = self.parse_mask[lvl](mask)  # (bs, 1, hl, wl) -> (bs, n_head, hl, wl)
             _, n_head, hl, wl = mask.shape
             mask_folded = F.unfold(input=mask,
@@ -280,16 +282,18 @@ class DeformableTransformerEncoderLayer(nn.Module):
             sampled_mask, index = mask_folded.reshape(bs, n_head, window_size ** 2, hl * wl).topk(self.n_points, dim=-2)
             window_grid_tmp = window_grid.repeat(1, n_head, 1, 1, hl * wl)
             offsets = window_grid_tmp.gather(2, index[:, :, :, None].repeat(1, 1, 1, 2, 1))
+            # offsets: (bs, n_head, n_points, 2, hl*wl), 在当前lvl的相对坐标
+            offsets = torch.stack([offsets*ratio[None, None, None, :, None] for ratio in spatial_ratio], dim=-4)
+            # (bs, n_head, n_level, n_points, 2, hl*wl)
             offsets_list.append(offsets)
-            # offsets: (bs, n_head, n_points, 2, n_q)
             sampled_mask_list.append(sampled_mask)     # (bs, n_head, 4, hl*wl)
-        return torch.cat(offsets_list, dim=-1).permute(0, 4, 1, 2, 3).contiguous(), \
+        return torch.cat(offsets_list, dim=-1).permute(0, 5, 1, 2, 3, 4).contiguous(), \
             torch.cat(sampled_mask_list, dim=-1).permute(0, 3, 1, 2)
         # (bs, n_q, n_head, n_points, 2)
         # (N, n_q, n_head, n_points)
 
     def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, window_grid,
-                padding_mask=None, pred_attentions=None):
+                padding_mask=None, pred_attentions=None, spatial_ratios=None):
         """
 
         :param src: (bs, h1w1+h2w2+h3w3,c)
@@ -310,7 +314,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
         #                       padding_mask)
         src_value = src
         # ======get offsets======
-        offsets, pred_sampled = self.get_offsets(pred_attentions, window_grid, window_size=self.window_size)
+        offsets, pred_sampled = self.get_offsets(pred_attentions, window_grid, window_size=self.window_size,
+                                                 spatial_ratios=spatial_ratios)
         src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src_value, spatial_shapes,
                               level_start_index, padding_mask, pred_sampled, offsets)
         src = src + self.dropout1(src2)
@@ -380,9 +385,18 @@ class DeformableTransformerEncoder(nn.Module):
         """
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        length = len(spatial_shapes)
+        spatial_ratios = []
+        for self_lvl in range(length):
+            ratios_self_lvl = []
+            for other_lvl in range(length):
+                ratios_self_lvl.append((spatial_shapes[other_lvl]/spatial_shapes[self_lvl]).flip(dims=[-1]))
+            spatial_ratios.append(ratios_self_lvl)     # (w_ratio, h_ratio)
+        # print(spatial_ratios)        # lvl从大到小
+
         for _, layer in enumerate(self.layers):
             output = layer(output, pos, reference_points, spatial_shapes, level_start_index, window_grid,
-                           padding_mask, pred_attentions)
+                           padding_mask, pred_attentions, spatial_ratios)
         return output
 
 
