@@ -62,12 +62,7 @@ def loss_attentions(outputs, targets, indices, num_inst):
     Returns:
         mask_loss (Tensor): A scalar tensor containing the loss.
     """
-    if len(targets[0]['attentions']) == 0:
-        return outputs['pred_attentions'][0].sum() * 0
-    if 'pred_attentions' not in outputs:
-        for key in outputs.keys():
-            print(f'key = {key}')
-        print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+    assert 'pred_attentions' in outputs
     device = outputs['pred_attentions'][0].device
     max_H = max([t["attentions"][0].tensor.size()[-2] for t in targets])
     max_W = max([t["attentions"][0].tensor.size()[-1] for t in targets])
