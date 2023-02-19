@@ -75,15 +75,17 @@ class TESTR(nn.Module):
 
         use_attention_in_transformer = False
         if self.use_attention:
-            num_convs = 4     # TODO: 通过配置文件控制
-            kernel_size = 3
-            padding_size = (kernel_size - 1)//2
-            self.convs = nn.ModuleList()
-            for i in range(num_convs):
-                self.convs.append(nn.Conv2d(in_channels=self.d_model, out_channels=self.d_model,
-                                            kernel_size=kernel_size, padding=padding_size))
-            self.relu = nn.ReLU(inplace=True)
-            self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+            # num_convs = 4     # TODO: 通过配置文件控制
+            # kernel_size = 3
+            # padding_size = (kernel_size - 1)//2
+            # self.convs = nn.ModuleList()
+            # for i in range(num_convs):
+            #     self.convs.append(nn.Conv2d(in_channels=self.d_model, out_channels=self.d_model,
+            #                                 kernel_size=kernel_size, padding=padding_size))
+            # self.relu = nn.ReLU(inplace=True)
+            # self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+            self.pred_attention = nn.ModuleList(nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+                                                for _ in range(self.num_feature_levels))
             use_attention_in_transformer = cfg.MODEL.ATTENTION.IN_TRANSFORMER
         mode = cfg.MODEL.mode
         self.window_size = cfg.MODEL.ATTENTION.window_size
@@ -233,11 +235,12 @@ class TESTR(nn.Module):
             if self.use_gaussian:
                 pred_attentions_gaussian = []
             for lvl, src in enumerate(srcs):  # src is supposed to be (bs, c, H_l, W_l)
-                x = src
-                # ======predict global mask======
-                for conv in self.convs:
-                    x = conv(x)
-                pred_attention = self.pred_attention(self.relu(x))        # (bs, 1, hl, wl)
+                # x = src
+                # # ======predict global mask======
+                # for conv in self.convs:
+                #     x = conv(x)
+                # pred_attention = self.pred_attention(self.relu(x))        # (bs, 1, hl, wl)
+                pred_attention = self.pred_attention[lvl](src)  # (bs, 1, hl, wl)
                 pred_attentions.append(pred_attention)
                 if self.use_gaussian:
                     bs, c, h, w = pred_attention.shape

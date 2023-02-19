@@ -33,5 +33,5 @@ TEST:
   USE_LEXICON: False
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_w7-based-offsets_4xb1_80000e"
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_w7-based-offsets_4xb1_80000e_only-offsets-norm"
 
