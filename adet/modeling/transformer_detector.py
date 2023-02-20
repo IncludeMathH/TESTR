@@ -134,8 +134,6 @@ class TransformerDetector(nn.Module):
         
         loss_cfg = cfg.MODEL.TRANSFORMER.LOSS
         weight_dict = {'loss_ce': loss_cfg.POINT_CLASS_WEIGHT, 'loss_ctrl_points': loss_cfg.POINT_COORD_WEIGHT, 'loss_texts': loss_cfg.POINT_TEXT_WEIGHT}
-        if self.use_attention:
-            weight_dict['attentions'] = 1.0  # 可以更改，是一个超参数
         enc_weight_dict = {'loss_bbox': loss_cfg.BOX_COORD_WEIGHT, 'loss_giou': loss_cfg.BOX_GIOU_WEIGHT, 'loss_ce': loss_cfg.BOX_CLASS_WEIGHT}
         if loss_cfg.AUX_LOSS:
             aux_weight_dict = {}
@@ -152,10 +150,12 @@ class TransformerDetector(nn.Module):
         dec_losses = ['labels', 'ctrl_points', 'texts']
         if self.use_attention:
             dec_losses.append('attentions')
+            weight_dict['loss_attention'] = 1.0 # 可以更改，是一个超参数
 
         self.criterion = SetCriterion(self.testr.num_classes, box_matcher, point_matcher,
                                       weight_dict, enc_losses, dec_losses, self.testr.num_ctrl_points, 
-                                      focal_alpha=loss_cfg.FOCAL_ALPHA, focal_gamma=loss_cfg.FOCAL_GAMMA)
+                                      focal_alpha=loss_cfg.FOCAL_ALPHA, focal_gamma=loss_cfg.FOCAL_GAMMA,
+                                      global_loss=global_loss)
 
         pixel_mean = torch.Tensor(cfg.MODEL.PIXEL_MEAN).to(self.device).view(3, 1, 1)
         pixel_std = torch.Tensor(cfg.MODEL.PIXEL_STD).to(self.device).view(3, 1, 1)
