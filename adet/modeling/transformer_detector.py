@@ -149,7 +149,7 @@ class TransformerDetector(nn.Module):
         enc_losses = ['labels', 'boxes']
         dec_losses = ['labels', 'ctrl_points', 'texts']
         if self.use_attention:
-            dec_losses.append('attentions')
+            global_loss = ['attentions']
             weight_dict['loss_attention'] = 1.0 # 可以更改，是一个超参数
 
         self.criterion = SetCriterion(self.testr.num_classes, box_matcher, point_matcher,
