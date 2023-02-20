@@ -65,6 +65,8 @@ class TESTR(nn.Module):
         if self.use_attention:
             self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
             use_attention_in_transformer = cfg.MODEL.ATTENTION.IN_TRANSFORMER
+            self.enc_pred_attention = nn.ModuleList(nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+                                                    for _ in range(self.num_encoder_layers))
         mode = cfg.MODEL.mode
         self.transformer = DeformableTransformer(
             d_model=self.d_model, nhead=self.nhead, num_encoder_layers=self.num_encoder_layers,
@@ -210,7 +212,8 @@ class TESTR(nn.Module):
                     pred_attentions_gaussian.append(self.conv2d_gaussian(pred_attention))
         else:
             pred_attentions = None
-        hs, hs_text, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
+        hs, hs_text, init_reference, inter_references, \
+        enc_outputs_class, enc_outputs_coord_unact, enc_features = self.transformer(
             srcs, masks, pos, ctrl_point_embed, text_embed, text_pos_embed, text_mask=None,
             pred_attentions=pred_attentions_gaussian if self.use_gaussian else pred_attentions)
 
@@ -238,12 +241,19 @@ class TESTR(nn.Module):
         outputs_coord = torch.stack(outputs_coords)
         outputs_text = torch.stack(outputs_texts)
 
+        # =====output encoder pred mask======
+        enc_preds = []
+        for lvl, enc_feature in enumerate(enc_features):
+            enc_pred_layer = [self.enc_pred_attention[lvl](enc_f) for enc_f in enc_feature]
+            enc_preds.append({'pred_attentions': enc_pred_layer})
+
         out = {'pred_logits': outputs_class[-1],
                'pred_ctrl_points': outputs_coord[-1],
                'pred_texts': outputs_text[-1],
                }
         if self.use_attention:
             out['pred_attentions'] = pred_attentions
+            out['enc_preds'] = enc_preds
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(
                 outputs_class, outputs_coord, outputs_text)

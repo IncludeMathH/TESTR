@@ -172,8 +172,8 @@ class DeformableTransformer(nn.Module):
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)     # (bs, num_levels, 2)
 
         # encoder
-        memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten,
-                              mask_flatten, pred_attentions_flatten)
+        memory, enc_features = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios,
+                                            lvl_pos_embed_flatten, mask_flatten, pred_attentions_flatten)
 
         # prepare input for decoder
         bs, _, c = memory.shape
@@ -201,7 +201,8 @@ class DeformableTransformer(nn.Module):
         )
 
         inter_references_out = inter_references
-        return hs, hs_text, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
+        return hs, hs_text, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, \
+               enc_features
 
 
 class DeformableTransformerEncoderLayer(nn.Module):
@@ -302,13 +303,36 @@ class DeformableTransformerEncoder(nn.Module):
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]  # (bs, H1W1+H2W2+..., n_lvl, 2)
         return reference_points
 
-    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None, pred_attentions=None):
+    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None,
+                pred_attentions=None):
+        """
+
+        :param src:
+        :param spatial_shapes:
+        :param level_start_index:
+        :param valid_ratios:
+        :param pos:
+        :param padding_mask:
+        :param pred_attentions:
+        :return:
+        enc_features: List(List(Tensor)), [n_layers, [n_levels, (bs, c, hl, wl)]]
+        """
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        enc_features = []
+        bs, n_q, c = src.shape
         for _, layer in enumerate(self.layers):
-            output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask, pred_attentions)
-
-        return output
+            output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask,
+                           pred_attentions)
+            # =====for enc loss ======
+            enc_feature_list = output.split([H_ * W_ for H_, W_ in spatial_shapes], dim=1)
+            enc_feature_l = []
+            for lid_, (H_, W_) in enumerate(spatial_shapes):
+                # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
+                enc_feature_l_ = enc_feature_list[lid_].transpose(1, 2).reshape(bs, c, H_, W_)
+                enc_feature_l.append(enc_feature_l_)
+            enc_features.append(enc_feature_l)
+        return output, enc_features
 
 
 class DeformableTransformerDecoderLayer(nn.Module):

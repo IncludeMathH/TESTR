@@ -91,7 +91,7 @@ class SetCriterion(nn.Module):
     """
 
     def __init__(self, num_classes, enc_matcher, dec_matcher, weight_dict, enc_losses, dec_losses, num_ctrl_points,
-                 focal_alpha=0.25, focal_gamma=2.0):
+                 focal_alpha=0.25, focal_gamma=2.0, global_loss=None):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -110,6 +110,7 @@ class SetCriterion(nn.Module):
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
         self.num_ctrl_points = num_ctrl_points
+        self.global_loss = global_loss
 
     def loss_labels(self, outputs, targets, indices, num_inst, log=False):
         """Classification loss (NLL)
@@ -257,13 +258,27 @@ class SetCriterion(nn.Module):
             losses.update(self.get_loss(loss, outputs, targets,
                                         indices, num_inst, **kwargs))
 
+        # compute global mask loss
+        if self.global_loss is not None:
+            loss = self.global_loss[0]
+            kwargs = {}
+            losses.update(self.get_loss(loss, outputs, targets,
+                                        indices, num_inst, **kwargs))
+
+            if 'enc_preds' in outputs:
+                for i, enc_pred in enumerate(outputs['enc_preds']):
+                    kwargs = {}
+                    l_dict = self.get_loss(
+                        loss, enc_pred, targets, indices, num_inst, **kwargs)
+                    l_dict = {k + f'_layer_{i}': v for k, v in l_dict.items()}
+                    losses.update(l_dict)
+
+
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
                 indices = self.dec_matcher(aux_outputs, targets)
                 for loss in self.dec_losses:
-                    if loss == 'attentions':
-                        continue
                     kwargs = {}
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
