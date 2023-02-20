@@ -62,19 +62,22 @@ def loss_attentions(outputs, targets, indices, num_inst):
     Returns:
         mask_loss (Tensor): A scalar tensor containing the loss.
     """
-    if len(targets[0]['attentions']) == 0:
-        return outputs['pred_attentions'][0].sum() * 0
-    if 'pred_attentions' not in outputs:
-        for key in outputs.keys():
-            print(f'key = {key}')
-        print(f'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+    assert 'pred_attentions' in outputs
+
     device = outputs['pred_attentions'][0].device
-    gt_attention = targets[0]['attentions'][0].tensor.to(device=device, dtype=torch.float32)
+    # 当batch size > 1时，要考虑补零操作
+    max_H = max([t["attentions"][0].tensor.size()[-2] for t in targets])
+    max_W = max([t["attentions"][0].tensor.size()[-1] for t in targets])
+    pred_tmp = []
+    for t in targets:
+        t_tensor = t["attentions"][0].tensor.to(device=device, dtype=torch.float32)
+        _, h, w = t_tensor.shape
+        pred_tmp.append(F.pad(t_tensor, (0, max_W-w, 0, max_H-h), 'constant', float(0)))
+    gt_attention = torch.stack(pred_tmp, dim=0)     # (bs, 1, h, w)
 
     attention_loss = []
-    for item in outputs['pred_attentions']:
-        pred_attention = item[0, 0]          # item: (B, 1, H, W)
-        gt = F.interpolate(gt_attention[None], size=pred_attention.shape[-2:]).squeeze(0).squeeze(0)
+    for pred_attention in outputs['pred_attentions']:       # pred_attention: (bs, 1, hl, wl)
+        gt = F.interpolate(gt_attention, size=pred_attention.shape[-2:])
         loss_tmp = F.binary_cross_entropy_with_logits(pred_attention, gt, reduction="mean")
         attention_loss.append(loss_tmp)
     return {'loss_attention': sum(attention_loss)/len(attention_loss)}
