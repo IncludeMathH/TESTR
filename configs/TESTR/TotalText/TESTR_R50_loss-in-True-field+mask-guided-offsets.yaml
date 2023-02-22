@@ -16,7 +16,7 @@ MODEL:
     DEC_N_POINTS: 4
   ATTENTION:
     ENABLED: True
-    IN_TRANSFORMER: False
+    IN_TRANSFORMER: True
     USE_GAUSSIAN: False
   mode: 'cuda'
 SOLVER:
@@ -29,4 +29,4 @@ SOLVER:
   CHECKPOINT_PERIOD: 1000
 TEST:
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/Bezier-Loss-in-True-field"
+OUTPUT_DIR: "output/TESTR/totaltext/Bezier-Loss-in-True-field+mask-guided-offsets"

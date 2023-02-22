@@ -112,7 +112,7 @@ def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations,
 
 
 class MSDeformAttn(nn.Module):
-    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, mode='cuda'):
+    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, mode='cuda', encoder_mode=False):
         """
         Multi-Scale Deformable Attention Module
         :param d_model      hidden dimension
@@ -138,7 +138,9 @@ class MSDeformAttn(nn.Module):
         self.n_heads = n_heads
         self.n_points = n_points
 
-        self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
+        if not encoder_mode:
+            self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
+        self.encoder_mode = encoder_mode
         self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
         self.value_proj = nn.Linear(d_model, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
@@ -146,7 +148,8 @@ class MSDeformAttn(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self):
-        constant_(self.sampling_offsets.weight.data, 0.)
+        if not self.encoder_mode:
+            constant_(self.sampling_offsets.weight.data, 0.)
         thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
         grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
         grid_init = (grid_init / grid_init.abs().max(-1, keepdim=True)[0]).view(self.n_heads, 1, 1, 2).repeat(1,
@@ -155,8 +158,9 @@ class MSDeformAttn(nn.Module):
                                                                                                               1)
         for i in range(self.n_points):
             grid_init[:, :, i, :] *= i + 1
-        with torch.no_grad():
-            self.sampling_offsets.bias = nn.Parameter(grid_init.view(-1))
+        if not self.encoder_mode:
+            with torch.no_grad():
+                self.sampling_offsets.bias = nn.Parameter(grid_init.view(-1))
         constant_(self.attention_weights.weight.data, 0.)
         constant_(self.attention_weights.bias.data, 0.)
         xavier_uniform_(self.value_proj.weight.data)
@@ -165,7 +169,7 @@ class MSDeformAttn(nn.Module):
         constant_(self.output_proj.bias.data, 0.)
 
     def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_level_start_index,
-                input_padding_mask=None, pred_attentions=None):
+                input_padding_mask=None, pred_attentions=None, offsets=None):
         """
         :param pred_attentions (tesor):    (N, length_{query}, 1)
         :param query                       (N, Length_{query}, C)
@@ -190,12 +194,11 @@ class MSDeformAttn(nn.Module):
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
         value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
-        # 全局预测影响offsets：效果不好
-        # sampling_offsets = self.sampling_offsets(
-        #     query + pred_attentions if pred_attentions is not None else query).view(N, Len_q, self.n_heads,
-        #                                                                             self.n_levels, self.n_points, 2)
-        sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads,
-                                                             self.n_levels, self.n_points, 2)
+        if offsets is None:
+            sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads,
+                                                                 self.n_levels, self.n_points, 2)
+        else:
+            sampling_offsets = offsets  # (bs, n_q, n_head, n_level, n_points, 2)
         if reference_points.shape[-1] == 2:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
             sampling_locations = reference_points[:, :, None, :, None, :] \
