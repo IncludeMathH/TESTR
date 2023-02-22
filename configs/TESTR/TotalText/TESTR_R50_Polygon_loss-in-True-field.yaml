@@ -18,7 +18,7 @@ MODEL:
     ENABLED: True
     IN_TRANSFORMER: False
     USE_GAUSSIAN: False
-  mode: 'pytorch'
+  mode: 'cuda'
 SOLVER:
   IMS_PER_BATCH: 4      # 8
   BASE_LR: 5e-6         # 1e-5
@@ -31,5 +31,4 @@ TEST:
   USE_LEXICON: False
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/attention-loss-v2_bbox-attn"
-
+OUTPUT_DIR: "output/TESTR/totaltext/Loss-in-True-field"

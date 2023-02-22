@@ -78,7 +78,7 @@ def loss_attentions(outputs, targets, indices, num_inst):
     attention_loss = []
     for pred_attention in outputs['pred_attentions']:       # pred_attention: (bs, 1, hl, wl)
         gt = F.interpolate(gt_attention, size=pred_attention.shape[-2:])
-        loss_tmp = F.binary_cross_entropy_with_logits(pred_attention, gt, reduction="mean")
+        loss_tmp = F.binary_cross_entropy_with_logits(pred_attention*gt, gt, reduction="mean")
         attention_loss.append(loss_tmp)
     return {'loss_attention': sum(attention_loss)/len(attention_loss)}
 

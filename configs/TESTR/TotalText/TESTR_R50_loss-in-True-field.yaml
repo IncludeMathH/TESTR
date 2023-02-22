@@ -1,6 +1,6 @@
-_BASE_: "Base-TotalText-Polygon.yaml"
+_BASE_: "Base-TotalText.yaml"
 MODEL:
-  WEIGHTS: "weights/TESTR/pretrain_testr_R_50_polygon.pth"
+  WEIGHTS: "weights/TESTR/pretrain_testr_R_50.pth"
   RESNETS:
     DEPTH: 50
   TRANSFORMER:
@@ -20,16 +20,13 @@ MODEL:
     USE_GAUSSIAN: False
   mode: 'cuda'
 SOLVER:
-  IMS_PER_BATCH: 4      # 8
-  BASE_LR: 5e-6         # 1e-5
-  LR_BACKBONE: 5e-7     # 1e-6
+  IMS_PER_BATCH: 4  # 8
+  BASE_LR: 1e-5  # 2e-5
+  LR_BACKBONE: 1e-6  # 2e-6
   WARMUP_ITERS: 0
-  STEPS: (400000,)      # (200000,)
-  MAX_ITER: 80000        # 40000       # 20000
+  STEPS: (400000,)  # (200000,)
+  MAX_ITER: 80000  # 40000 # 20000
   CHECKPOINT_PERIOD: 1000
 TEST:
-  USE_LEXICON: False
-  LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/Polygon/attention-loss-v2_bbox-attn"
-
+OUTPUT_DIR: "output/TESTR/totaltext/Bezier-Loss-in-True-field"
