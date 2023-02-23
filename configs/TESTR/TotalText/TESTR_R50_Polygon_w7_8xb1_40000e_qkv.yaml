@@ -1,6 +1,6 @@
 _BASE_: "Base-TotalText-Polygon.yaml"
 MODEL:
-  WEIGHTS: "weights/TESTR/pretrain_testr_R_50_polygon.pth"
+  WEIGHTS: "detectron2://ImageNetPretrained/torchvision/R-50.pkl"
   RESNETS:
     DEPTH: 50
   TRANSFORMER:
@@ -21,17 +21,17 @@ MODEL:
     windos_size: 7
   mode: 'cuda'
 SOLVER:
-  GAMMA: 0.5
-  IMS_PER_BATCH: 8
-  BASE_LR: 1e-5
-  LR_BACKBONE: 1e-6
-  WARMUP_ITERS: 0
-  STEPS: (34000, 68000)      # (200000,)
-  MAX_ITER: 40000       # 20000
+  GAMMA: 0.1
+  IMS_PER_BATCH: 4
+  BASE_LR: 1e-6       # 1e-5
+  LR_BACKBONE: 1e-7   # 1e-6
+  WARMUP_ITERS: 2000
+  STEPS: (19000, 34000)      # (200000,)
+  MAX_ITER: 80000       # 20000
   CHECKPOINT_PERIOD: 1000
 TEST:
   USE_LEXICON: False
   LEXICON_TYPE: 1
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_w7_4xb1_80000e_qkv"
+OUTPUT_DIR: "output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_w7_4xb1_80000e_qkv_lr1e-6_test-2"
 

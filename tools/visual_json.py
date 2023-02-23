@@ -2,7 +2,7 @@ import json
 import copy
 import matplotlib.pyplot as plt
 
-dir = '/data1/dn/TESTR/output/TESTR/pretrain/TESTR_R50_Polygon_w7_p8_4xb1_80000e'
+dir = '/data1/dn/TESTR/output/TESTR/totaltext/TESTR_Res50/TESTR_R50_Polygon_w7_4xb1_80000e_qkv_lr1e-6_test-2'
 filename = dir + "/metrics.json"
 
 file = open(filename, "rb")
@@ -29,8 +29,8 @@ for t in tmp:
 print(f'length of loss:{len(total_losses)}, length of F score:{len(det_F)}, the max of det-F: {max(det_F)}, the max'
       f'of e2e_F: {max(e2e_F)}')
 print(f'det_F after every 10 thousand epoch: {det_F[10::10]}')
-det_F = det_F[:80]
-e2e_F = e2e_F[:80]
+# det_F = det_F[:80]
+# e2e_F = e2e_F[:80]
 
 fig1 = plt.figure('figure1')
 # plt.plot(list(range(1, len(total_losses)+1)), total_losses, color = 'orange', label = 'total_losses')
@@ -48,7 +48,7 @@ plt.xlabel("number of iters")
 plt.ylabel("hmean")
 plt.legend()
 plt.show()
-fig2.savefig(dir+'/figure-hmean-80.png')
+fig2.savefig(dir+'/figure-hmean.png')
 
 fig3 = plt.figure('figure3')
 # plt.plot(list(range(1, len(total_losses)+1)), total_losses, color = 'orange', label = 'total_losses')

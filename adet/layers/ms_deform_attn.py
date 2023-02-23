@@ -153,25 +153,22 @@ class MSDeformAttn(nn.Module):
     def _reset_parameters(self):
         if not self.encoder_mode:
             constant_(self.sampling_offsets.weight.data, 0.)
-        thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
-        grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
-        grid_init = (grid_init / grid_init.abs().max(-1, keepdim=True)[0]).view(self.n_heads, 1, 1, 2).repeat(1,
-                                                                                                              self.n_levels,
-                                                                                                              self.n_points,
-                                                                                                              1)
-        for i in range(self.n_points):
-            grid_init[:, :, i, :] *= i + 1
-        if not self.encoder_mode:
+            thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
+            grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
+            grid_init = (grid_init / grid_init.abs().max(-1, keepdim=True)[0]).view(self.n_heads, 1, 1, 2)
+            grid_init = grid_init.repeat(1, self.n_levels, self.n_points, 1)
+            for i in range(self.n_points):
+                grid_init[:, :, i, :] *= i + 1
             with torch.no_grad():
                 self.sampling_offsets.bias = nn.Parameter(grid_init.view(-1))
 
         xavier_uniform_(self.value_proj.weight.data)
         constant_(self.value_proj.bias.data, 0.)
         # ======init parameter for query and key======
-        xavier_uniform_(self.query_proj.weight.data)
-        constant_(self.query_proj.bias.data, 0.)
-        xavier_uniform_(self.key_proj.weight.data)
-        constant_(self.key_proj.bias.data, 0.)
+        # xavier_uniform_(self.query_proj.weight.data)
+        # constant_(self.query_proj.bias.data, 0.)
+        # xavier_uniform_(self.key_proj.weight.data)
+        # constant_(self.key_proj.bias.data, 0.)
 
         xavier_uniform_(self.output_proj.weight.data)
         constant_(self.output_proj.bias.data, 0.)
@@ -202,6 +199,7 @@ class MSDeformAttn(nn.Module):
         assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
 
         # ======1. get value and padding zeros======
+        query = self.query_proj(query)   # bs, n_q, c
         value = self.value_proj(input_flatten)
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
@@ -226,7 +224,6 @@ class MSDeformAttn(nn.Module):
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
 
         # ======3. (New) get traditional query and key ======
-        query = self.query_proj(query)   # bs, n_q, c
         key = self.key_proj(input_flatten)      # bs, sum of pixels, c
 
         # ======4. (New) get attention weights =========
@@ -245,12 +242,12 @@ class MSDeformAttn(nn.Module):
                                               mode='bilinear', padding_mode='zeros', align_corners=False)
             # (bs*n_head, c//n_head, n_q, n_point)
             sampling_value_list.append(sampling_value_l_)
-        sampoled_key = torch.stack(sampling_value_list, dim=-2).flatten(-2).view(N, self.n_heads,
+        sampled_key = torch.stack(sampling_value_list, dim=-2).flatten(-2).view(N, self.n_heads,
                                                                                  self.d_model // self.n_heads,
                                                                                  Len_q, -1).permute(0, 3, 1, 4, 2)
         # (bs*n_head, c//n_head, n_q, n_point*n_level) -> (bs, n_q, n_heads, n_points*n_level, c//n_heads)
         query = query.view(N, Len_q, self.n_heads, self.d_model // self.n_heads)
-        attention_weights = (query.unsqueeze(-2) * sampoled_key).sum(-1)  # (bs, n_q, n_heads, n_points * n_levels)
+        attention_weights = (query.unsqueeze(-2) * sampled_key).sum(-1)  # (bs, n_q, n_heads, n_points * n_levels)
 
         if self.mode == 'pytorch':
             output = ms_deform_attn_core_pytorch(
