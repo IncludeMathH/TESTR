@@ -91,7 +91,9 @@ class MSDeformAttn(nn.Module):
         self.n_points = n_points
 
         self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
-        self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
+        self.query_proj = nn.Linear(d_model, d_model)
+        self.key_proj = nn.Linear(d_model, d_model)
+        # self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
         self.value_proj = nn.Linear(d_model, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
 
@@ -106,8 +108,8 @@ class MSDeformAttn(nn.Module):
             grid_init[:, :, i, :] *= i + 1
         with torch.no_grad():
             self.sampling_offsets.bias = nn.Parameter(grid_init.view(-1))
-        constant_(self.attention_weights.weight.data, 0.)
-        constant_(self.attention_weights.bias.data, 0.)
+        # constant_(self.attention_weights.weight.data, 0.)
+        # constant_(self.attention_weights.bias.data, 0.)
         xavier_uniform_(self.value_proj.weight.data)
         constant_(self.value_proj.bias.data, 0.)
         xavier_uniform_(self.output_proj.weight.data)
@@ -128,15 +130,17 @@ class MSDeformAttn(nn.Module):
         N, Len_q, _ = query.shape
         N, Len_in, _ = input_flatten.shape
         assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
+        # ====get key and query====
+        query = self.query_proj(query)
+        key = self.key_proj(input_flatten).view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
 
         value = self.value_proj(input_flatten)
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
         value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
         sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
-        attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels * self.n_points)
-        attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)
         # N, Len_q, n_heads, n_levels, n_points, 2
+
         if reference_points.shape[-1] == 2:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
             sampling_locations = reference_points[:, :, None, :, None, :] \
@@ -147,6 +151,28 @@ class MSDeformAttn(nn.Module):
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
+        # ===== reshape query=====
+        query = query.view(N, Len_q, self.n_heads, self.d_model // self.n_heads).permute(0, 2, 3, 1).flatten(0, 1)
+        # ====sample key=====
+        N_, S_, M_, D_ = value.shape
+        _, Lq_, M_, L_, P_, _ = sampling_locations.shape
+        key_list = key.split([H_ * W_ for H_, W_ in input_spatial_shapes], dim=1)
+        sampling_grids = 2 * sampling_locations - 1
+        sampling_key_list = []
+        for lid_, (H_, W_) in enumerate(input_spatial_shapes):
+            # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
+            key_l_ = key_list[lid_].flatten(2).transpose(1, 2).reshape(N_ * M_, D_, H_, W_)
+            # N_, Lq_, M_, P_, 2 -> N_, M_, Lq_, P_, 2 -> N_*M_, Lq_, P_, 2
+            sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1)
+            # N_*M_, D_, Lq_, P_
+            sampling_key_l_ = F.grid_sample(key_l_, sampling_grid_l_,
+                                            mode='bilinear', padding_mode='zeros', align_corners=False)
+            sampling_key_list.append(sampling_key_l_)
+
+        sampled_key = torch.stack(sampling_key_list, dim=-2)   # bs*n_head, c//n_heads, n_q, n_levels, n_points
+        attention_weights = (query[..., None] * sampled_key.flatten(-2)).sum(1)   # bs*n_head, n_q, n_levels*n_points
+        attention_weights = F.softmax(attention_weights, -1).view(N, self.n_heads, Len_q, self.n_levels, self.n_points).permute(0, 2, 1, 3, 4).contiguous()
+
         output = _MSDeformAttnFunction.apply(
             value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
         output = self.output_proj(output)
