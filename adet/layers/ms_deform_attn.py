@@ -198,6 +198,7 @@ class MSDeformAttn(nn.Module):
             sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads,
                                                                  self.n_levels, self.n_points, 2)
         else:
+            # print(f'offsets.shape = {offsets.shape}')
             sampling_offsets = offsets  # (bs, n_q, n_head, n_level, n_points, 2)
         if reference_points.shape[-1] == 2:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
@@ -211,6 +212,7 @@ class MSDeformAttn(nn.Module):
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
 
         if self.mode == 'pytorch':
+            print(f'pytorch version is used!')
             attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)
             output = ms_deform_attn_core_pytorch(
                 value, input_spatial_shapes, sampling_locations, attention_weights, pred_attentions)
