@@ -73,7 +73,8 @@ def loss_attentions(outputs, targets, indices, num_inst):
         t_tensor = t["attentions"][0].tensor.to(device=device, dtype=torch.float32)
         _, h, w = t_tensor.shape
         pred_tmp.append(F.pad(t_tensor, (0, max_W-w, 0, max_H-h), 'constant', float(0)))
-    gt_attention = torch.stack(pred_tmp, dim=0)     # (bs, 1, h, w)
+    num_pred_mask = outputs['pred_attentions'][0].shape[1]
+    gt_attention = torch.stack(pred_tmp, dim=0).repeat(1, num_pred_mask, 1, 1)  # (bs, 1, h, w)
 
     attention_loss = []
     for pred_attention in outputs['pred_attentions']:       # pred_attention: (bs, 1, hl, wl)
