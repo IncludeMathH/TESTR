@@ -2,7 +2,7 @@ import json
 import copy
 import matplotlib.pyplot as plt
 
-dir = '/home/user/TESTR/output/TESTR/totaltext/Bezier-Loss-in-True-field+mask-guided-offsets+12p_8xb2'
+dir = '/data1/dn/TESTR/output/TESTR/totaltext/Bezier-Loss-in-True-field+mask-guided-offsets+qkv'
 filename = dir + "/metrics.json"
 
 file = open(filename, "rb")

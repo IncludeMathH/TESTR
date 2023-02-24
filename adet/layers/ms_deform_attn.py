@@ -138,35 +138,37 @@ class MSDeformAttn(nn.Module):
         self.n_heads = n_heads
         self.n_points = n_points
 
-        if not encoder_mode:
-            self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
         self.encoder_mode = encoder_mode
-        self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
         self.value_proj = nn.Linear(d_model, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
 
-        self._reset_parameters()
+        if not encoder_mode:
+            self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
+            self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
+        else:
+            # encoder
+            self.query_proj = nn.Linear(d_model, d_model)
+            self.key_proj = nn.Linear(d_model, d_model)
+        self._reset_parameters()  # encoder不使用其初始化方案
 
     def _reset_parameters(self):
         if not self.encoder_mode:
             constant_(self.sampling_offsets.weight.data, 0.)
-        thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
-        grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
-        grid_init = (grid_init / grid_init.abs().max(-1, keepdim=True)[0]).view(self.n_heads, 1, 1, 2).repeat(1,
-                                                                                                              self.n_levels,
-                                                                                                              self.n_points,
-                                                                                                              1)
-        for i in range(self.n_points):
-            grid_init[:, :, i, :] *= i + 1
-        if not self.encoder_mode:
+            thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
+            grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
+            grid_init = (grid_init / grid_init.abs().max(-1, keepdim=True)[0]).view(self.n_heads, 1, 1, 2)
+            grid_init = grid_init.repeat(1, self.n_levels, self.n_points, 1)
+            for i in range(self.n_points):
+                grid_init[:, :, i, :] *= i + 1
+
             with torch.no_grad():
                 self.sampling_offsets.bias = nn.Parameter(grid_init.view(-1))
-        constant_(self.attention_weights.weight.data, 0.)
-        constant_(self.attention_weights.bias.data, 0.)
-        xavier_uniform_(self.value_proj.weight.data)
-        constant_(self.value_proj.bias.data, 0.)
-        xavier_uniform_(self.output_proj.weight.data)
-        constant_(self.output_proj.bias.data, 0.)
+            constant_(self.attention_weights.weight.data, 0.)
+            constant_(self.attention_weights.bias.data, 0.)
+            xavier_uniform_(self.value_proj.weight.data)
+            constant_(self.value_proj.bias.data, 0.)
+            xavier_uniform_(self.output_proj.weight.data)
+            constant_(self.output_proj.bias.data, 0.)
 
     def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_level_start_index,
                 input_padding_mask=None, pred_attentions=None, offsets=None):
@@ -189,6 +191,11 @@ class MSDeformAttn(nn.Module):
         N, Len_q, _ = query.shape  # 有位置编码信息 -> query -> attention
         N, Len_in, _ = input_flatten.shape  # 无位置编码信息 -> value
         assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
+
+        # ======get qkv in encoder=====
+        if self.encoder_mode:
+            query = self.query_proj(query)
+            key = self.key_proj(input_flatten)
 
         value = self.value_proj(input_flatten)
         if input_padding_mask is not None:
@@ -217,10 +224,37 @@ class MSDeformAttn(nn.Module):
             output = ms_deform_attn_core_pytorch(
                 value, input_spatial_shapes, sampling_locations, attention_weights, pred_attentions)
         elif self.mode == 'cuda':
-            attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads,
-                                                                   self.n_levels * self.n_points)
-            attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads,
-                                                                      self.n_levels, self.n_points)
+            if not self.encoder_mode:
+                attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads,
+                                                                       self.n_levels * self.n_points)
+                attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads,
+                                                                          self.n_levels, self.n_points)
+            else:
+                # ======4. (New) get attention weights =========
+                # ======4.1 sample key ======
+                key = key.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
+                key_list = key.split([H_ * W_ for H_, W_ in input_spatial_shapes], dim=1)
+                sampling_grids = 2 * sampling_locations - 1
+                sampling_value_list = []
+                for lid_, (H_, W_) in enumerate(input_spatial_shapes):
+                    key_l_ = key_list[lid_].flatten(2).transpose(1, 2).reshape(N * self.n_heads,
+                                                                               self.d_model // self.n_heads,
+                                                                               H_, W_)
+                    # (bs, H_*W_, n_head, c//n_head) -> bs, H_*W_, c -> bs, c, H_*W_ -> (bs*n_head, c//n_head, H_, W_)
+                    sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1)
+                    # (bs, n_q, n_head, n_point, 2) -> bs, n_head, n_q, n_point, 2 -> (bs*n_head, n_q, n_point, 2)
+                    sampling_value_l_ = F.grid_sample(key_l_, sampling_grid_l_,
+                                                      mode='bilinear', padding_mode='zeros', align_corners=False)
+                    # (bs*n_head, c//n_head, n_q, n_point)
+                    sampling_value_list.append(sampling_value_l_)
+                sampled_key = torch.stack(sampling_value_list, dim=-2).flatten(-2).view(N, self.n_heads,
+                                                                                        self.d_model // self.n_heads,
+                                                                                        Len_q, -1).permute(0, 3, 1, 4,
+                                                                                                           2)
+                # (bs*n_head, c//n_head, n_q, n_point*n_level) -> (bs, n_q, n_heads, n_points*n_level, c//n_heads)
+                query = query.view(N, Len_q, self.n_heads, self.d_model // self.n_heads)
+                attention_weights = (query.unsqueeze(-2) * sampled_key).sum(-1)
+                # (bs, n_q, n_heads, n_points * n_levels)
             output = _MSDeformAttnFunction.apply(value, input_spatial_shapes, input_level_start_index,
                                                  sampling_locations, attention_weights, self.im2col_step)
         else:
