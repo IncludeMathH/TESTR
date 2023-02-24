@@ -57,6 +57,8 @@ class DeformableTransformer(nn.Module):
         self._reset_parameters()
 
         self.n_points = enc_n_points
+        self.num_encoder_layers = num_encoder_layers
+        self.num_levels = num_feature_levels
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -161,23 +163,22 @@ class DeformableTransformer(nn.Module):
         sampled_mask_list = []
         for lvl, mask in enumerate(masks):
             spatial_ratio = spatial_ratios[lvl]
-            mask = mask.repeat(1, self.nhead, 1, 1)  # (bs, 1, hl, wl) -> (bs, n_head, hl, wl)
-            _, n_head, hl, wl = mask.shape
+            _, n_pred_mask, hl, wl = mask.shape
             mask_folded = F.unfold(input=mask,
                                    kernel_size=window_size,
                                    padding=window_size // 2)
-            sampled_mask, index = mask_folded.reshape(bs, n_head, window_size ** 2, hl * wl).topk(self.n_points, dim=-2)
-            window_grid_tmp = window_grid.repeat(1, n_head, 1, 1, hl * wl)
-            offsets = window_grid_tmp.gather(2, index[:, :, :, None].repeat(1, 1, 1, 2, 1))
-            # offsets: (bs, n_head, n_points, 2, hl*wl), 在当前lvl的相对坐标
-            offsets = torch.stack([offsets*ratio[None, None, None, :, None] for ratio in spatial_ratio], dim=-4)
-            # (bs, n_head, n_level, n_points, 2, hl*wl)
+            sampled_mask, index = mask_folded.reshape(bs, n_pred_mask, window_size ** 2, hl * wl).topk(self.n_points, dim=-2)
+            window_grid_tmp = window_grid.repeat(1, n_pred_mask, 1, 1, hl * wl)
+            offsets = window_grid_tmp.gather(2, index[:, :, :, None].repeat(1, 1, 1, 2, 1)).reshape(bs, self.num_encoder_layers, self.nhead, self.num_levels, self.n_points, 2, hl * wl)
+            # offsets: (bs, n_pred_mask, n_points, 2, hl*wl), 在当前lvl的相对坐标 -> 展开，只对n_levels这一维度进行缩放
+            offsets = offsets * torch.stack([ratio for ratio in spatial_ratio])[None, None, None, :, None, :, None]
+            # (bs, n_layers, n_heads, n_level, n_points, 2, hl*wl)
             offsets_list.append(offsets)
-            sampled_mask_list.append(sampled_mask)     # (bs, n_head, 4, hl*wl)
-        return torch.cat(offsets_list, dim=-1).permute(0, 5, 1, 2, 3, 4).contiguous(), \
-            torch.cat(sampled_mask_list, dim=-1).permute(0, 3, 1, 2)
-        # (bs, n_q, n_head, n_level, n_points, 2)
-        # (N, n_q, n_head, n_points)
+            sampled_mask_list.append(sampled_mask.reshape(bs, self.num_encoder_layers, self.nhead, self.num_levels, self.n_points, hl * wl))
+        return torch.cat(offsets_list, dim=-1).permute(1, 0, 6, 2, 3, 4, 5).contiguous(), \
+            torch.cat(sampled_mask_list, dim=-1).permute(1, 0, 5, 2, 3, 4)
+        # (n_layers, bs, n_q, n_heads, n_level, n_points, 2)
+        # (n_layers, bs, n_q, n_heads, n_levels, n_points)
 
     def forward(self, srcs, masks, pos_embeds, query_embed, text_embed, text_pos_embed, text_mask=None, pred_attentions=None):
         """
@@ -217,6 +218,8 @@ class DeformableTransformer(nn.Module):
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)     # (bs, num_levels, 2)
 
         # get offsets and use global attention
+        offsets = None
+        pred_sampled = None
         if self.use_attention:
             window_grid = self.get_window_points(window_size=7, device=src_flatten.device)
             # =====get spatial ratios =======
@@ -234,9 +237,10 @@ class DeformableTransformer(nn.Module):
                                                      window_size=7,
                                                      spatial_ratios=spatial_ratios)
 
+
         # encoder
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten,
-                              mask_flatten, pred_sampled=None, offsets=offsets)
+                              mask_flatten, pred_sampled=None, offsets_list=offsets)
 
         # prepare input for decoder
         bs, _, c = memory.shape
@@ -366,12 +370,13 @@ class DeformableTransformerEncoder(nn.Module):
         return reference_points
 
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None,
-                pred_sampled=None, offsets=None):
+                pred_sampled=None, offsets_list=None):
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
-        for _, layer in enumerate(self.layers):
+
+        for layer_index, layer in enumerate(self.layers):
             output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask, pred_sampled,
-                           offsets=offsets)
+                           offsets=offsets_list[layer_index])
 
         return output
 

@@ -63,7 +63,8 @@ class TESTR(nn.Module):
 
         use_attention_in_transformer = False
         if self.use_attention:
-            self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=1, kernel_size=1)
+            num_pred_mask = self.num_encoder_layers * self.num_feature_levels * self.nhead
+            self.pred_attention = nn.Conv2d(in_channels=self.d_model, out_channels=num_pred_mask, kernel_size=1)
             use_attention_in_transformer = cfg.MODEL.ATTENTION.IN_TRANSFORMER
         mode = cfg.MODEL.mode
         self.transformer = DeformableTransformer(
@@ -142,7 +143,7 @@ class TESTR(nn.Module):
         if self.use_attention:
             use_gaussian = cfg.MODEL.ATTENTION.USE_GAUSSIAN
         if use_gaussian:
-            self.conv2d_gaussian = nn.Conv2d(1, 1, (3, 3), padding=1, padding_mode='reflect')
+            self.conv2d_gaussian = nn.Conv2d(num_pred_mask, num_pred_mask, (3, 3), padding=1, padding_mode='reflect')
             w = 1/4.8976 * torch.Tensor([[[[0.3679, 0.6065, 0.3679],
                                            [0.6065, 1., 0.6065],
                                            [0.3679, 0.6065, 0.3679]]]])
@@ -204,7 +205,7 @@ class TESTR(nn.Module):
             if self.use_gaussian:
                 pred_attentions_gaussian = []
             for src in srcs:            # src is supposed to be (bs, c_l, H_l, W_l)
-                pred_attention = self.pred_attention(src)
+                pred_attention = self.pred_attention(src)   # (bs, n_layer*n_lvl*n_head, hl, wl)
                 pred_attentions.append(pred_attention)
                 if self.use_gaussian:
                     pred_attentions_gaussian.append(self.conv2d_gaussian(pred_attention))
