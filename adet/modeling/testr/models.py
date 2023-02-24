@@ -48,8 +48,8 @@ class TESTR(nn.Module):
         self.activation = "relu"
         self.return_intermediate_dec = True
         self.num_feature_levels = cfg.MODEL.TRANSFORMER.NUM_FEATURE_LEVELS
-        self.dec_n_points = cfg.MODEL.TRANSFORMER.ENC_N_POINTS
-        self.enc_n_points = cfg.MODEL.TRANSFORMER.DEC_N_POINTS
+        self.dec_n_points = cfg.MODEL.TRANSFORMER.DEC_N_POINTS
+        self.enc_n_points = cfg.MODEL.TRANSFORMER.ENC_N_POINTS
         self.num_proposals = cfg.MODEL.TRANSFORMER.NUM_QUERIES
         self.pos_embed_scale = cfg.MODEL.TRANSFORMER.POSITION_EMBEDDING_SCALE
         self.num_ctrl_points = cfg.MODEL.TRANSFORMER.NUM_CTRL_POINTS

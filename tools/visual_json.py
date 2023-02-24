@@ -2,7 +2,7 @@ import json
 import copy
 import matplotlib.pyplot as plt
 
-dir = '/work/dn/TESTR/output/TESTR/totaltext/Bezier-Loss-in-True-field+mask-guided-offsets'
+dir = '/home/user/TESTR/output/TESTR/totaltext/Bezier-Loss-in-True-field+mask-guided-offsets+12p_8xb2'
 filename = dir + "/metrics.json"
 
 file = open(filename, "rb")
@@ -38,7 +38,7 @@ fig1.savefig(dir + '/figure-loss.png')
 fig2 = plt.figure('figure2')
 plt.plot(list(range(1, len(det_F)+1)), det_F, color = 'orange', label = 'det hmean')
 plt.plot(list(range(1, len(e2e_F)+1)), e2e_F, color = 'blue', label = 'e2e hmean')
-plt.xlabel("number of iters")
+plt.xlabel("number of iters / (10**3)")
 plt.ylabel("hmean")
 plt.legend()
 plt.show()
