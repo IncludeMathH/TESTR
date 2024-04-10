@@ -21,12 +21,12 @@ MODEL:
   mode: 'cuda'
 SOLVER:
   IMS_PER_BATCH: 4  # 8
-  BASE_LR: 1e-5  # 2e-5
-  LR_BACKBONE: 1e-6  # 2e-6
+  BASE_LR: 1e-4  # 1e-5  # 2e-5
+  LR_BACKBONE: 1e-5  # 1e-6  # 2e-6
   WARMUP_ITERS: 0
   STEPS: (500000, 800000)   #(60000, 80000)  # (200000,)
-  MAX_ITER: 80000   # 120000  # 40000 # 20000
+  MAX_ITER: 120000  # 80000
   CHECKPOINT_PERIOD: 1000
 TEST:
   EVAL_PERIOD: 1000
-OUTPUT_DIR: "output/TESTR/totaltext/Bezier-Loss-in-True-field+mask-guided-offsets+multi-offsets"
+OUTPUT_DIR: "output/TESTR/totaltext/Bezier-Loss-in-True-field+mask-guided-offsets+multi-offsets_lr1e-4_80000e"
